@@ -78,6 +78,8 @@ def create_dataset(n_samples: int = 5000, random_state: int = 42) -> pd.DataFram
 
 def main() -> None:
     root = Path(__file__).resolve().parents[2]
+    (root / "src" / "__init__.py").touch(exist_ok=True)
+    (root / "src" / "data" / "__init__.py").touch(exist_ok=True)
     output_dir = root / "data" / "processed"
     output_dir.mkdir(parents=True, exist_ok=True)
     output_file = output_dir / "employee_attrition.csv"

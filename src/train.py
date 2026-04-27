@@ -5,6 +5,7 @@ from pathlib import Path
 
 import joblib
 import pandas as pd
+from sklearn.base import clone
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
@@ -78,12 +79,14 @@ def train_and_evaluate(data_path: Path, artifacts_dir: Path, random_state: int =
     best_pipeline = None
     best_predictions = None
     best_probabilities = None
+    model_probabilities: dict[str, pd.Series] = {}
 
     for model_name, model in models.items():
-        pipeline = Pipeline(steps=[("preprocess", preprocess), ("model", model)])
+        pipeline = Pipeline(steps=[("preprocess", clone(preprocess)), ("model", model)])
         pipeline.fit(X_train, y_train)
         preds = pipeline.predict(X_test)
         probs = pipeline.predict_proba(X_test)[:, 1]
+        model_probabilities[model_name] = pd.Series(probs).reset_index(drop=True)
 
         metrics = {
             "accuracy": accuracy_score(y_test, preds),
@@ -101,8 +104,10 @@ def train_and_evaluate(data_path: Path, artifacts_dir: Path, random_state: int =
             best_predictions = preds
             best_probabilities = probs
 
-    assert best_name is not None and best_pipeline is not None
-    assert best_predictions is not None and best_probabilities is not None
+    if best_name is None or best_pipeline is None:
+        raise ValueError("Best model selection failed: no valid trained pipeline was found.")
+    if best_predictions is None or best_probabilities is None:
+        raise ValueError("Best model predictions are missing after training.")
 
     y_test_series = y_test.reset_index(drop=True)
 
@@ -125,6 +130,8 @@ def train_and_evaluate(data_path: Path, artifacts_dir: Path, random_state: int =
     scored["actual_attrition"] = y_test_series
     scored["predicted_attrition"] = best_predictions
     scored["attrition_probability"] = best_probabilities
+    for model_name, probs in model_probabilities.items():
+        scored[f"{model_name}_probability"] = probs
     scored.to_csv(artifacts_dir / "test_predictions.csv", index=False)
 
     joblib.dump(best_pipeline, model_dir / "best_model.joblib")
