@@ -37,6 +37,20 @@ def main() -> None:
 
     comparison = pd.DataFrame(metrics["model_comparison"]).T.reset_index()
     comparison.rename(columns={"index": "model"}, inplace=True)
+
+    cross_validation = metrics.get("cross_validation", {})
+    for metric_name in ["accuracy", "precision", "recall", "f1", "roc_auc"]:
+        comparison[f"cv_{metric_name}_mean"] = comparison["model"].map(
+            lambda model_name: cross_validation.get(model_name, {})
+            .get(metric_name, {})
+            .get("mean")
+        )
+        comparison[f"cv_{metric_name}_std"] = comparison["model"].map(
+            lambda model_name: cross_validation.get(model_name, {})
+            .get(metric_name, {})
+            .get("std")
+        )
+
     comparison.to_csv(root / "artifacts" / "model_comparison.csv", index=False)
     comparison_path = root / "artifacts" / "model_comparison.csv"
 
@@ -132,6 +146,61 @@ def main() -> None:
         plt.tight_layout()
         plt.savefig(figures_dir / "roc_curve.png", dpi=140)
         plt.close()
+
+        if cross_validation:
+            cv_rows: list[dict[str, float | str]] = []
+            for model_name, metric_values in cross_validation.items():
+                for metric_name, stats in metric_values.items():
+                    cv_rows.append(
+                        {
+                            "model": model_name,
+                            "metric": metric_name,
+                            "mean": stats["mean"],
+                            "std": stats["std"],
+                        }
+                    )
+            cv_df = pd.DataFrame(cv_rows)
+
+            plt.figure(figsize=(11, 5))
+            sns.barplot(
+                data=cv_df,
+                x="metric",
+                y="mean",
+                hue="model",
+                errorbar=None,
+                palette="deep",
+            )
+
+            metric_order = ["accuracy", "precision", "recall", "f1", "roc_auc"]
+            models_order = list(cross_validation.keys())
+            x_positions: list[float] = []
+            y_means: list[float] = []
+            y_stds: list[float] = []
+            for metric_idx, metric_name in enumerate(metric_order):
+                for model_idx, model_name in enumerate(models_order):
+                    row = cv_df[
+                        (cv_df["metric"] == metric_name) & (cv_df["model"] == model_name)
+                    ].iloc[0]
+                    x_positions.append(metric_idx + (-0.2 if model_idx == 0 else 0.2))
+                    y_means.append(float(row["mean"]))
+                    y_stds.append(float(row["std"]))
+            plt.errorbar(
+                x=x_positions,
+                y=y_means,
+                yerr=y_stds,
+                fmt="none",
+                ecolor="black",
+                capsize=3,
+                linewidth=1,
+            )
+            plt.title("5-Fold Stratified Cross-Validation Comparison")
+            plt.xlabel("Metric")
+            plt.ylabel("Score (Mean +/- Std)")
+            plt.ylim(0, 1.05)
+            plt.tight_layout()
+            plt.savefig(figures_dir / "cv_comparison.png", dpi=140)
+            plt.close()
+
         print(f"Saved figures and tables to: {root / 'artifacts'}")
     else:
         fallback_report = root / "artifacts" / "analysis_report.md"
@@ -148,6 +217,7 @@ def main() -> None:
                     "- `artifacts/analysis_summary.json`",
                     "- `artifacts/figures/feature_importance.png` (if plotting available)",
                     "- `artifacts/figures/roc_curve.png` (if plotting available)",
+                    "- `artifacts/figures/cv_comparison.png` (if plotting available)",
                     "",
                     "## Quick findings",
                     f"- Rows: {summary['rows']}",

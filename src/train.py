@@ -19,7 +19,7 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedKFold, cross_validate, train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
@@ -69,6 +69,28 @@ def train_and_evaluate(data_path: Path, artifacts_dir: Path, random_state: int =
         X, y, test_size=0.2, random_state=random_state, stratify=y
     )
 
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_state)
+    scoring = ["accuracy", "precision", "recall", "f1", "roc_auc"]
+    cross_validation: dict[str, dict[str, dict[str, float]]] = {}
+
+    for model_name, model in models.items():
+        cv_pipeline = Pipeline(steps=[("preprocess", clone(preprocess)), ("model", clone(model))])
+        cv_results = cross_validate(
+            cv_pipeline,
+            X_train,
+            y_train,
+            cv=cv,
+            scoring=scoring,
+            n_jobs=-1,
+        )
+        cross_validation[model_name] = {
+            metric: {
+                "mean": float(cv_results[f"test_{metric}"].mean()),
+                "std": float(cv_results[f"test_{metric}"].std()),
+            }
+            for metric in scoring
+        }
+
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     model_dir = artifacts_dir / "models"
     model_dir.mkdir(parents=True, exist_ok=True)
@@ -115,6 +137,7 @@ def train_and_evaluate(data_path: Path, artifacts_dir: Path, random_state: int =
         "project": "Employee Attrition Risk Prediction",
         "best_model": best_name,
         "model_comparison": comparison,
+        "cross_validation": cross_validation,
         "best_model_details": {
             "classification_report": classification_report(
                 y_test_series, best_predictions, output_dict=True
