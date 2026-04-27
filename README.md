@@ -79,8 +79,73 @@ ML Project/
 
 ## 5) Quick Run
 
-Use the commands from the chat response to:
-1. Create a virtual environment
-2. Install dependencies
-3. Run data generation -> training -> analysis
-4. Initialize git, commit, create GitHub repo, and push
+```powershell
+cd "C:\Users\Admin\Desktop\ML Project"
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+py -m pip install --upgrade pip
+py -m pip install -r requirements.txt
+
+py src/data/make_dataset.py
+py src/train.py
+py src/analyze.py
+```
+
+If `py` is unavailable in your setup, replace `py` with `python`.
+
+## 6) Current Best Results
+
+From `artifacts/metrics.json`:
+- Best model: `random_forest`
+- Accuracy: `0.901`
+- Precision: `0.873`
+- Recall: `0.759`
+- F1: `0.812`
+- ROC-AUC: `0.955`
+
+## 7) Teacher Demo: How to Show Output
+
+Use this sequence in front of your teacher:
+
+1. Run the full pipeline
+```powershell
+py src/data/make_dataset.py
+py src/train.py
+py src/analyze.py
+```
+
+2. Show the key generated files
+```powershell
+Get-ChildItem .\data\processed\
+Get-ChildItem .\artifacts\
+Get-ChildItem .\artifacts\models\
+Get-ChildItem .\artifacts\figures\
+```
+
+3. Show model metrics clearly
+```powershell
+Get-Content .\artifacts\metrics.json
+```
+
+4. Show concise research report
+```powershell
+Get-Content .\report.md
+```
+
+5. Explain in one line:
+- "We compared Logistic Regression and Random Forest on a reproducible HR-style dataset; Random Forest performed best with F1 = 0.812 and ROC-AUC = 0.955."
+
+## 8) Git + GitHub
+
+Local repo commands:
+```powershell
+git add .
+git commit -m "Add polished report and teacher-ready README demo workflow"
+```
+
+Push commands (after setting your correct repo URL):
+```powershell
+git branch -M main
+git remote set-url origin https://github.com/<your-username>/employee-attrition-mini-research.git
+git push -u origin main
+```
