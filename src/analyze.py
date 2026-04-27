@@ -41,13 +41,13 @@ def main() -> None:
     cross_validation = metrics.get("cross_validation", {})
     for metric_name in ["accuracy", "precision", "recall", "f1", "roc_auc"]:
         comparison[f"cv_{metric_name}_mean"] = comparison["model"].map(
-            lambda model_name: cross_validation.get(model_name, {})
-            .get(metric_name, {})
+            lambda model_name, m=metric_name: cross_validation.get(model_name, {})
+            .get(m, {})
             .get("mean")
         )
         comparison[f"cv_{metric_name}_std"] = comparison["model"].map(
-            lambda model_name: cross_validation.get(model_name, {})
-            .get(metric_name, {})
+            lambda model_name, m=metric_name: cross_validation.get(model_name, {})
+            .get(m, {})
             .get("std")
         )
 
