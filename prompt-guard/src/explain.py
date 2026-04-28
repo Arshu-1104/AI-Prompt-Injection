@@ -4,16 +4,27 @@ from html import escape
 from pathlib import Path
 
 import joblib
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from transformers import DistilBertForSequenceClassification, DistilBertTokenizerFast
+
+try:
+    import matplotlib.pyplot as plt
+
+    PLOTTING_AVAILABLE = True
+except Exception as exc:
+    PLOTTING_AVAILABLE = False
+    PLOTTING_IMPORT_ERROR = str(exc)
 
 
 LABELS = ["SAFE", "SUSPICIOUS", "MALICIOUS"]
 
 
 def _extract_classical_top_features() -> None:
+    if not PLOTTING_AVAILABLE:
+        print(f"Plotting unavailable due to environment policy: {PLOTTING_IMPORT_ERROR}")
+        return
+
     root = Path(__file__).resolve().parents[1]
     model_path = root / "models" / "classical_model.pkl"
     figures_dir = root / "artifacts" / "figures"

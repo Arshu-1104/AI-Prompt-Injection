@@ -4,14 +4,21 @@ import json
 from pathlib import Path
 
 import joblib
-import matplotlib.pyplot as plt
 import pandas as pd
-import seaborn as sns
 import torch
 from sklearn.metrics import classification_report, confusion_matrix
 from transformers import DistilBertForSequenceClassification, DistilBertTokenizerFast
 
 from src.preprocess import get_train_test_data
+
+try:
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    PLOTTING_AVAILABLE = True
+except Exception as exc:
+    PLOTTING_AVAILABLE = False
+    PLOTTING_IMPORT_ERROR = str(exc)
 
 
 LABELS = ["SAFE", "SUSPICIOUS", "MALICIOUS"]
@@ -67,24 +74,6 @@ def main() -> None:
     cm_classical = confusion_matrix(y_true, classical_preds, labels=LABELS)
     cm_bert = confusion_matrix(y_true, bert_preds, labels=LABELS)
 
-    plt.figure(figsize=(6, 5))
-    sns.heatmap(cm_classical, annot=True, fmt="d", cmap="Blues", xticklabels=LABELS, yticklabels=LABELS)
-    plt.title("Confusion Matrix - Classical")
-    plt.xlabel("Predicted")
-    plt.ylabel("True")
-    plt.tight_layout()
-    plt.savefig(figures_dir / "confusion_matrix_classical.png", dpi=140)
-    plt.close()
-
-    plt.figure(figsize=(6, 5))
-    sns.heatmap(cm_bert, annot=True, fmt="d", cmap="Purples", xticklabels=LABELS, yticklabels=LABELS)
-    plt.title("Confusion Matrix - BERT")
-    plt.xlabel("Predicted")
-    plt.ylabel("True")
-    plt.tight_layout()
-    plt.savefig(figures_dir / "confusion_matrix_bert.png", dpi=140)
-    plt.close()
-
     classical_report = classification_report(y_true, classical_preds, output_dict=True, zero_division=0)
     bert_report = classification_report(y_true, bert_preds, output_dict=True, zero_division=0)
 
@@ -107,16 +96,6 @@ def main() -> None:
         ]
     )
 
-    melted = comparison_df.melt(id_vars="model", var_name="metric", value_name="score")
-    plt.figure(figsize=(10, 5))
-    sns.barplot(data=melted, x="metric", y="score", hue="model")
-    plt.ylim(0, 1.05)
-    plt.xticks(rotation=20)
-    plt.title("Model Comparison on Held-Out Test Set")
-    plt.tight_layout()
-    plt.savefig(figures_dir / "model_comparison.png", dpi=140)
-    plt.close()
-
     per_class_rows: list[dict[str, float | str]] = []
     for label in LABELS:
         per_class_rows.append(
@@ -125,13 +104,48 @@ def main() -> None:
         per_class_rows.append({"class": label, "model": "bert", "f1": bert_report[label]["f1-score"]})
     per_class_df = pd.DataFrame(per_class_rows)
 
-    plt.figure(figsize=(8, 5))
-    sns.barplot(data=per_class_df, x="class", y="f1", hue="model")
-    plt.ylim(0, 1.05)
-    plt.title("Per-Class F1 Comparison")
-    plt.tight_layout()
-    plt.savefig(figures_dir / "per_class_f1.png", dpi=140)
-    plt.close()
+    if PLOTTING_AVAILABLE:
+        plt.figure(figsize=(6, 5))
+        sns.heatmap(
+            cm_classical, annot=True, fmt="d", cmap="Blues", xticklabels=LABELS, yticklabels=LABELS
+        )
+        plt.title("Confusion Matrix - Classical")
+        plt.xlabel("Predicted")
+        plt.ylabel("True")
+        plt.tight_layout()
+        plt.savefig(figures_dir / "confusion_matrix_classical.png", dpi=140)
+        plt.close()
+
+        plt.figure(figsize=(6, 5))
+        sns.heatmap(
+            cm_bert, annot=True, fmt="d", cmap="Purples", xticklabels=LABELS, yticklabels=LABELS
+        )
+        plt.title("Confusion Matrix - BERT")
+        plt.xlabel("Predicted")
+        plt.ylabel("True")
+        plt.tight_layout()
+        plt.savefig(figures_dir / "confusion_matrix_bert.png", dpi=140)
+        plt.close()
+
+        melted = comparison_df.melt(id_vars="model", var_name="metric", value_name="score")
+        plt.figure(figsize=(10, 5))
+        sns.barplot(data=melted, x="metric", y="score", hue="model")
+        plt.ylim(0, 1.05)
+        plt.xticks(rotation=20)
+        plt.title("Model Comparison on Held-Out Test Set")
+        plt.tight_layout()
+        plt.savefig(figures_dir / "model_comparison.png", dpi=140)
+        plt.close()
+
+        plt.figure(figsize=(8, 5))
+        sns.barplot(data=per_class_df, x="class", y="f1", hue="model")
+        plt.ylim(0, 1.05)
+        plt.title("Per-Class F1 Comparison")
+        plt.tight_layout()
+        plt.savefig(figures_dir / "per_class_f1.png", dpi=140)
+        plt.close()
+    else:
+        print(f"Plotting unavailable due to environment policy: {PLOTTING_IMPORT_ERROR}")
 
     metrics_path = artifacts_dir / "metrics.json"
     metrics = {}

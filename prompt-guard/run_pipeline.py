@@ -1,25 +1,26 @@
 from __future__ import annotations
 
+import importlib
 import traceback
 from pathlib import Path
-
-from src import evaluate, explain, load_data, robustness, train_bert, train_classical
 
 
 def main() -> None:
     steps = [
-        ("load_data", load_data.main),
-        ("train_classical", train_classical.main),
-        ("train_bert", train_bert.main),
-        ("evaluate", evaluate.main),
-        ("explain", explain.main),
-        ("robustness", robustness.main),
+        ("load_data", "src.load_data"),
+        ("train_classical", "src.train_classical"),
+        ("train_bert", "src.train_bert"),
+        ("evaluate", "src.evaluate"),
+        ("explain", "src.explain"),
+        ("robustness", "src.robustness"),
     ]
     errors: list[str] = []
 
-    for name, func in steps:
+    for name, module_path in steps:
         print(f"\n=== Running step: {name} ===")
         try:
+            module = importlib.import_module(module_path)
+            func = getattr(module, "main")
             func()
             print(f"Step '{name}' completed.")
         except Exception as exc:
