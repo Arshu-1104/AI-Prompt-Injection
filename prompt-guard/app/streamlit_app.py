@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from io import StringIO
-
 import pandas as pd
 import streamlit as st
 
@@ -28,7 +26,7 @@ with st.sidebar:
     selected_model = st.selectbox("Model", ["classical", "bert"], format_func=lambda x: x.upper())
     show_patterns = st.checkbox("Show attack pattern list", value=False)
     if show_patterns:
-        st.write(ATTACK_PATTERNS)
+        st.markdown("\n".join(f"- `{pattern}`" for pattern in ATTACK_PATTERNS))
     st.markdown("### About")
     st.write("PromptGuard classifies prompts into SAFE, SUSPICIOUS, and MALICIOUS with explanations.")
 
@@ -59,7 +57,7 @@ with tab_single:
 
             with st.expander("Detected attack patterns", expanded=True):
                 if result["attack_patterns"]:
-                    st.write(result["attack_patterns"])
+                    st.markdown("\n".join(f"- `{pattern}`" for pattern in result["attack_patterns"]))
                 else:
                     st.write("No known attack patterns found.")
 
