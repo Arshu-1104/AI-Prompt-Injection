@@ -1,7 +1,0 @@
-__pycache__/
-*.pyc
-.venv/
-venv/
-artifacts/
-data/processed/
-.DS_Store
