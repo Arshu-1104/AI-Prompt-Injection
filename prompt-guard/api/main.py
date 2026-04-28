@@ -27,10 +27,13 @@ async def lifespan(app: FastAPI):
     app.state.analyzers = {}
     try:
         app.state.analyzers["classical"] = PromptAnalyzer(model_type="classical")
-        app.state.analyzers["bert"] = PromptAnalyzer(model_type="bert")
-        app.state.models_loaded = True
     except Exception:
-        app.state.models_loaded = False
+        pass
+    try:
+        app.state.analyzers["bert"] = PromptAnalyzer(model_type="bert")
+    except Exception:
+        pass
+    app.state.models_loaded = len(app.state.analyzers) > 0
     yield
 
 
@@ -53,6 +56,8 @@ def health() -> dict:
 def predict(payload: PredictRequest) -> dict:
     if not app.state.models_loaded:
         raise HTTPException(status_code=503, detail="Models are not loaded.")
+    if payload.model not in app.state.analyzers:
+        raise HTTPException(status_code=503, detail=f"Requested model '{payload.model}' is not available.")
     analyzer = app.state.analyzers[payload.model]
     result = analyzer.predict(payload.text)
     return {
@@ -71,6 +76,8 @@ def batch_predict(payload: BatchPredictRequest) -> list[dict]:
         raise HTTPException(status_code=503, detail="Models are not loaded.")
     if not payload.texts:
         raise HTTPException(status_code=400, detail="texts cannot be empty.")
+    if payload.model not in app.state.analyzers:
+        raise HTTPException(status_code=503, detail=f"Requested model '{payload.model}' is not available.")
     analyzer = app.state.analyzers[payload.model]
     predictions = analyzer.batch_predict(payload.texts)
     return [
