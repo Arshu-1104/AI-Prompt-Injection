@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import transformers
 from datasets import Dataset
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 from transformers import (
@@ -86,14 +87,18 @@ def train_bert(random_state: int = 42) -> dict[str, float]:
         report_to=[],
     )
 
-    trainer = Trainer(
+    trainer_kwargs = dict(
         model=model,
         args=args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        tokenizer=tokenizer,
         compute_metrics=_compute_metrics,
     )
+    if tuple(int(x) for x in transformers.__version__.split(".")[:2]) >= (4, 46):
+        trainer_kwargs["processing_class"] = tokenizer
+    else:
+        trainer_kwargs["tokenizer"] = tokenizer
+    trainer = Trainer(**trainer_kwargs)
     trainer.train()
     metrics = trainer.evaluate()
     parsed_metrics = {

@@ -28,26 +28,36 @@ def _extract_classical_top_features() -> None:
 
     if hasattr(classifier, "coef_"):
         weights = classifier.coef_
+        for idx, label in enumerate(LABELS):
+            class_weights = weights[idx]
+            top_idx = np.argsort(class_weights)[-20:]
+            top_features = feature_names[top_idx]
+            top_values = class_weights[top_idx]
+            order = np.argsort(top_values)
+
+            plt.figure(figsize=(8, 6))
+            plt.barh(top_features[order], top_values[order], color="#4C72B0")
+            plt.title(f"Top TF-IDF Features - {label}")
+            plt.xlabel("Weight")
+            plt.tight_layout()
+            plt.savefig(figures_dir / f"tfidf_features_{label}.png", dpi=140)
+            plt.close()
     elif hasattr(classifier, "feature_importances_"):
         global_importance = classifier.feature_importances_
-        weights = np.vstack([global_importance for _ in LABELS])
-    else:
-        raise ValueError("Unsupported classical classifier for feature explanation.")
-
-    for idx, label in enumerate(LABELS):
-        class_weights = weights[idx]
-        top_idx = np.argsort(class_weights)[-20:]
+        top_idx = np.argsort(global_importance)[-20:]
         top_features = feature_names[top_idx]
-        top_values = class_weights[top_idx]
+        top_values = global_importance[top_idx]
         order = np.argsort(top_values)
 
         plt.figure(figsize=(8, 6))
         plt.barh(top_features[order], top_values[order], color="#4C72B0")
-        plt.title(f"Top TF-IDF Features - {label}")
-        plt.xlabel("Weight")
+        plt.title("Top Feature Importances (Random Forest - Global)")
+        plt.xlabel("Importance")
         plt.tight_layout()
-        plt.savefig(figures_dir / f"tfidf_features_{label}.png", dpi=140)
+        plt.savefig(figures_dir / "tfidf_features_RF_global.png", dpi=140)
         plt.close()
+    else:
+        raise ValueError("Unsupported classical classifier for feature explanation.")
 
 
 def get_token_importance(text: str) -> dict[str, float]:
