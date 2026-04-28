@@ -28,6 +28,9 @@ def train_classical(random_state: int = 42) -> dict:
     y_test = test_df["label"]
 
     vectorizer = TfidfVectorizer(max_features=20000, ngram_range=(1, 3), sublinear_tf=True)
+    nb_vectorizer = TfidfVectorizer(
+        max_features=20000, ngram_range=(1, 2), sublinear_tf=False
+    )
     models = {
         "logistic_regression": LogisticRegression(max_iter=1000, C=1.0, random_state=random_state),
         "random_forest": RandomForestClassifier(
@@ -41,8 +44,9 @@ def train_classical(random_state: int = 42) -> dict:
     pipelines: dict[str, Pipeline] = {}
 
     for name, model in models.items():
+        selected_vectorizer = nb_vectorizer if name == "multinomial_nb" else vectorizer
         pipeline = Pipeline(
-            steps=[("tfidf", clone(vectorizer)), ("classifier", clone(model))]
+            steps=[("tfidf", clone(selected_vectorizer)), ("classifier", clone(model))]
         )
         scores = cross_validate(
             pipeline,

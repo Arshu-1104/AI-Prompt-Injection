@@ -7,7 +7,6 @@ import numpy as np
 import torch
 from transformers import DistilBertForSequenceClassification, DistilBertTokenizerFast
 
-from src.explain import get_token_importance
 from src.preprocess import clean_text, highlight_attack_patterns
 
 
@@ -54,7 +53,9 @@ class PromptAnalyzer:
             if not bert_dir.exists():
                 raise FileNotFoundError(f"BERT model missing at {bert_dir}.")
             self.bert_tokenizer = DistilBertTokenizerFast.from_pretrained(str(bert_dir))
-            self.bert_model = DistilBertForSequenceClassification.from_pretrained(str(bert_dir))
+            self.bert_model = DistilBertForSequenceClassification.from_pretrained(
+                str(bert_dir), output_attentions=True
+            )
             self.bert_model.to(self.device)
             self.bert_model.eval()
 
@@ -78,6 +79,33 @@ class PromptAnalyzer:
         idx = int(np.argmax(probs))
         return LABELS[idx], float(probs[idx])
 
+    def _get_token_importance(self, text: str) -> dict[str, float]:
+        if self.bert_model is None or self.bert_tokenizer is None:
+            raise ValueError("BERT model is not loaded.")
+        encoded = self.bert_tokenizer(
+            text, truncation=True, padding="max_length", max_length=256, return_tensors="pt"
+        )
+        encoded = {k: v.to(self.device) for k, v in encoded.items()}
+        with torch.no_grad():
+            outputs = self.bert_model(**encoded, output_attentions=True)
+        last_attention = outputs.attentions[-1].mean(dim=1).squeeze(0)
+        token_scores = last_attention.mean(dim=0).detach().cpu().numpy()
+        token_ids = encoded["input_ids"].squeeze(0).detach().cpu().numpy()
+        tokens = self.bert_tokenizer.convert_ids_to_tokens(token_ids)
+
+        raw_scores = {
+            tok.lower(): float(score)
+            for tok, score in zip(tokens, token_scores)
+            if tok not in {"[PAD]"}
+        }
+        if not raw_scores:
+            return {}
+        values = np.array(list(raw_scores.values()))
+        min_v = float(values.min())
+        max_v = float(values.max())
+        denom = max(max_v - min_v, 1e-8)
+        return {k: (v - min_v) / denom for k, v in raw_scores.items()}
+
     def predict(self, text: str) -> dict:
         normalized = clean_text(text)
         patterns = highlight_attack_patterns(normalized)
@@ -86,7 +114,7 @@ class PromptAnalyzer:
         else:
             label, confidence = self._predict_bert(normalized)
 
-        token_highlights = get_token_importance(normalized) if self.model_type == "bert" else {}
+        token_highlights = self._get_token_importance(normalized) if self.model_type == "bert" else {}
         base_risk = {"SAFE": 15.0, "SUSPICIOUS": 55.0, "MALICIOUS": 85.0}[label]
         pattern_boost = min(len(patterns) * 4.0, 15.0)
         risk_score = max(0.0, min(100.0, base_risk + pattern_boost + (confidence - 0.5) * 20))

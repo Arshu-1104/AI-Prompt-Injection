@@ -38,7 +38,7 @@ def _binary_to_str(value: Any) -> str:
 
 
 def _inject_subtle_phrase(text: str, rng: np.random.Generator) -> str:
-    phrase = rng.choice(SUBTLE_PHRASES).item()
+    phrase = str(rng.choice(SUBTLE_PHRASES))
     prefix = f"{text.strip()} "
     return f"{prefix}Also, {phrase}."
 
