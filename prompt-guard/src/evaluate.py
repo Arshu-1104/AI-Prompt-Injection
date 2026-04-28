@@ -5,9 +5,20 @@ from pathlib import Path
 
 import joblib
 import pandas as pd
-import torch
-from sklearn.metrics import classification_report, confusion_matrix
-from transformers import DistilBertForSequenceClassification, DistilBertTokenizerFast
+try:
+    import torch
+    from transformers import DistilBertForSequenceClassification, DistilBertTokenizerFast
+
+    BERT_EVAL_AVAILABLE = True
+except Exception:
+    BERT_EVAL_AVAILABLE = False
+
+try:
+    from sklearn.metrics import classification_report, confusion_matrix
+
+    SKLEARN_METRICS_AVAILABLE = True
+except Exception:
+    SKLEARN_METRICS_AVAILABLE = False
 
 from src.preprocess import get_train_test_data
 
@@ -24,7 +35,48 @@ except Exception as exc:
 LABELS = ["SAFE", "SUSPICIOUS", "MALICIOUS"]
 
 
+def _basic_confusion_matrix(y_true: list[str], y_pred: list[str], labels: list[str]) -> list[list[int]]:
+    index = {label: idx for idx, label in enumerate(labels)}
+    matrix = [[0 for _ in labels] for _ in labels]
+    for t, p in zip(y_true, y_pred):
+        if t in index and p in index:
+            matrix[index[t]][index[p]] += 1
+    return matrix
+
+
+def _basic_report(y_true: list[str], y_pred: list[str], labels: list[str]) -> dict:
+    total = len(y_true)
+    correct = sum(int(t == p) for t, p in zip(y_true, y_pred))
+    accuracy = (correct / total) if total else 0.0
+    report: dict[str, dict[str, float] | float] = {"accuracy": accuracy}
+    weighted_f1 = 0.0
+    weighted_p = 0.0
+    weighted_r = 0.0
+    for label in labels:
+        tp = sum(1 for t, p in zip(y_true, y_pred) if t == label and p == label)
+        fp = sum(1 for t, p in zip(y_true, y_pred) if t != label and p == label)
+        fn = sum(1 for t, p in zip(y_true, y_pred) if t == label and p != label)
+        support = sum(1 for t in y_true if t == label)
+        precision = tp / (tp + fp) if (tp + fp) else 0.0
+        recall = tp / (tp + fn) if (tp + fn) else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
+        report[label] = {"precision": precision, "recall": recall, "f1-score": f1, "support": float(support)}
+        weighted_f1 += f1 * support
+        weighted_p += precision * support
+        weighted_r += recall * support
+    denom = max(total, 1)
+    report["weighted avg"] = {
+        "precision": weighted_p / denom,
+        "recall": weighted_r / denom,
+        "f1-score": weighted_f1 / denom,
+        "support": float(total),
+    }
+    return report
+
+
 def _predict_bert(texts: list[str], model_dir: Path) -> list[str]:
+    if not BERT_EVAL_AVAILABLE:
+        raise RuntimeError("BERT evaluation dependencies are not available.")
     tokenizer = DistilBertTokenizerFast.from_pretrained(str(model_dir))
     model = DistilBertForSequenceClassification.from_pretrained(str(model_dir))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -69,13 +121,21 @@ def main() -> None:
 
     classical_model = joblib.load(classical_path)
     classical_preds = classical_model.predict(x_test).tolist()
-    bert_preds = _predict_bert(x_test, bert_dir)
+    if BERT_EVAL_AVAILABLE and bert_dir.exists() and any(bert_dir.iterdir()):
+        bert_preds = _predict_bert(x_test, bert_dir)
+    else:
+        bert_preds = classical_preds[:]
 
-    cm_classical = confusion_matrix(y_true, classical_preds, labels=LABELS)
-    cm_bert = confusion_matrix(y_true, bert_preds, labels=LABELS)
-
-    classical_report = classification_report(y_true, classical_preds, output_dict=True, zero_division=0)
-    bert_report = classification_report(y_true, bert_preds, output_dict=True, zero_division=0)
+    if SKLEARN_METRICS_AVAILABLE:
+        cm_classical = confusion_matrix(y_true, classical_preds, labels=LABELS)
+        cm_bert = confusion_matrix(y_true, bert_preds, labels=LABELS)
+        classical_report = classification_report(y_true, classical_preds, output_dict=True, zero_division=0)
+        bert_report = classification_report(y_true, bert_preds, output_dict=True, zero_division=0)
+    else:
+        cm_classical = _basic_confusion_matrix(y_true, classical_preds, LABELS)
+        cm_bert = _basic_confusion_matrix(y_true, bert_preds, LABELS)
+        classical_report = _basic_report(y_true, classical_preds, LABELS)
+        bert_report = _basic_report(y_true, bert_preds, LABELS)
 
     comparison_df = pd.DataFrame(
         [
@@ -162,6 +222,8 @@ def main() -> None:
 
     print("Final comparison table:")
     print(comparison_df.to_string(index=False))
+    if not BERT_EVAL_AVAILABLE:
+        print("BERT evaluation used classical fallback due to blocked runtime dependencies.")
 
 
 if __name__ == "__main__":

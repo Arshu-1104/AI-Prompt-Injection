@@ -5,8 +5,13 @@ from pathlib import Path
 
 import joblib
 import numpy as np
-import torch
-from transformers import DistilBertForSequenceClassification, DistilBertTokenizerFast
+try:
+    import torch
+    from transformers import DistilBertForSequenceClassification, DistilBertTokenizerFast
+
+    BERT_EXPLAIN_AVAILABLE = True
+except Exception:
+    BERT_EXPLAIN_AVAILABLE = False
 
 try:
     import matplotlib.pyplot as plt
@@ -72,6 +77,8 @@ def _extract_classical_top_features() -> None:
 
 
 def get_token_importance(text: str) -> dict[str, float]:
+    if not BERT_EXPLAIN_AVAILABLE:
+        return {}
     root = Path(__file__).resolve().parents[1]
     bert_dir = root / "models" / "bert_model"
     if not bert_dir.exists():

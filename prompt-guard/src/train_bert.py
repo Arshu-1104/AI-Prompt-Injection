@@ -4,16 +4,22 @@ import json
 from pathlib import Path
 
 import numpy as np
-import torch
 import transformers
-from datasets import Dataset
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
-from transformers import (
-    DistilBertForSequenceClassification,
-    DistilBertTokenizerFast,
-    Trainer,
-    TrainingArguments,
-)
+
+try:
+    import torch
+    from datasets import Dataset
+    from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+    from transformers import (
+        DistilBertForSequenceClassification,
+        DistilBertTokenizerFast,
+        Trainer,
+        TrainingArguments,
+    )
+
+    BERT_AVAILABLE = True
+except Exception:
+    BERT_AVAILABLE = False
 
 from src.preprocess import get_train_test_data
 
@@ -34,7 +40,6 @@ def _compute_metrics(eval_pred: tuple[np.ndarray, np.ndarray]) -> dict[str, floa
 
 
 def train_bert(random_state: int = 42) -> dict[str, float]:
-    _ = random_state
     root = Path(__file__).resolve().parents[1]
     models_dir = root / "models"
     artifacts_dir = root / "artifacts"
@@ -42,6 +47,22 @@ def train_bert(random_state: int = 42) -> dict[str, float]:
     models_dir.mkdir(parents=True, exist_ok=True)
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
+    if not BERT_AVAILABLE:
+        metrics_path = artifacts_dir / "metrics.json"
+        metrics_data = {}
+        if metrics_path.exists():
+            with open(metrics_path, "r", encoding="utf-8") as f:
+                metrics_data = json.load(f)
+        metrics_data["bert_model"] = {
+            "skipped": True,
+            "reason": "Torch/Transformers blocked by Windows application control policy.",
+        }
+        with open(metrics_path, "w", encoding="utf-8") as f:
+            json.dump(metrics_data, f, indent=2)
+        print("Skipping BERT training due to blocked runtime dependencies.")
+        return metrics_data["bert_model"]
+
+    _ = random_state
     train_df, test_df = get_train_test_data()
     train_df = train_df.copy()
     test_df = test_df.copy()

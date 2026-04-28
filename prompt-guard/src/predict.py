@@ -4,8 +4,13 @@ from pathlib import Path
 
 import joblib
 import numpy as np
-import torch
-from transformers import DistilBertForSequenceClassification, DistilBertTokenizerFast
+try:
+    import torch
+    from transformers import DistilBertForSequenceClassification, DistilBertTokenizerFast
+
+    BERT_RUNTIME_AVAILABLE = True
+except Exception:
+    BERT_RUNTIME_AVAILABLE = False
 
 from src.preprocess import clean_text, highlight_attack_patterns
 
@@ -41,7 +46,7 @@ class PromptAnalyzer:
         self.classical_model = None
         self.bert_tokenizer = None
         self.bert_model = None
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu") if BERT_RUNTIME_AVAILABLE else None
 
         if self.model_type == "classical":
             model_path = models_dir / "classical_model.pkl"
@@ -49,6 +54,8 @@ class PromptAnalyzer:
                 raise FileNotFoundError(f"Classical model missing at {model_path}.")
             self.classical_model = joblib.load(model_path)
         else:
+            if not BERT_RUNTIME_AVAILABLE:
+                raise RuntimeError("BERT runtime unavailable due to blocked dependencies on this environment.")
             bert_dir = models_dir / "bert_model"
             if not bert_dir.exists():
                 raise FileNotFoundError(f"BERT model missing at {bert_dir}.")
@@ -69,6 +76,8 @@ class PromptAnalyzer:
     def _predict_bert(self, text: str) -> tuple[str, float]:
         if self.bert_model is None or self.bert_tokenizer is None:
             raise ValueError("BERT model is not loaded.")
+        if not BERT_RUNTIME_AVAILABLE or self.device is None:
+            raise RuntimeError("BERT runtime unavailable.")
         encoded = self.bert_tokenizer(
             text, truncation=True, padding="max_length", max_length=256, return_tensors="pt"
         )
@@ -82,6 +91,8 @@ class PromptAnalyzer:
     def _get_token_importance(self, text: str) -> dict[str, float]:
         if self.bert_model is None or self.bert_tokenizer is None:
             raise ValueError("BERT model is not loaded.")
+        if not BERT_RUNTIME_AVAILABLE or self.device is None:
+            return {}
         encoded = self.bert_tokenizer(
             text, truncation=True, padding="max_length", max_length=256, return_tensors="pt"
         )

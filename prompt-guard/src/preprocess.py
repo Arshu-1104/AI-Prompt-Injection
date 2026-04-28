@@ -5,7 +5,6 @@ import re
 from pathlib import Path
 
 import pandas as pd
-from sklearn.model_selection import train_test_split
 
 
 ATTACK_PATTERNS = [
@@ -73,12 +72,17 @@ def load_processed_dataset() -> pd.DataFrame:
 
 def get_train_test_data(test_size: float = 0.2, random_state: int = 42) -> tuple[pd.DataFrame, pd.DataFrame]:
     df = load_processed_dataset()
-    train_df, test_df = train_test_split(
-        df,
-        test_size=test_size,
-        random_state=random_state,
-        stratify=df["label"],
-    )
+    train_parts: list[pd.DataFrame] = []
+    test_parts: list[pd.DataFrame] = []
+    for _, group in df.groupby("label", sort=False):
+        shuffled = group.sample(frac=1.0, random_state=random_state)
+        split_idx = int(len(shuffled) * (1.0 - test_size))
+        split_idx = min(max(split_idx, 1), len(shuffled) - 1) if len(shuffled) > 1 else 1
+        train_parts.append(shuffled.iloc[:split_idx])
+        test_parts.append(shuffled.iloc[split_idx:])
+
+    train_df = pd.concat(train_parts).sample(frac=1.0, random_state=random_state)
+    test_df = pd.concat(test_parts).sample(frac=1.0, random_state=random_state)
 
     root = Path(__file__).resolve().parents[1]
     artifacts_dir = root / "artifacts"
