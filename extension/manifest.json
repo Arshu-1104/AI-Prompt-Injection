@@ -1,0 +1,19 @@
+﻿{
+  "manifest_version": 3,
+  "name": "PromptGuard",
+  "version": "1.0.0",
+  "description": "Real-time prompt injection detection for LLM chat interfaces",
+  "permissions": ["storage", "activeTab"],
+  "host_permissions": [],
+  "background": { "service_worker": "js/background.js" },
+  "content_scripts": [{
+    "matches": ["<all_urls>"],
+    "js": ["js/content.js"],
+    "run_at": "document_idle"
+  }],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": { "16": "icons/icon16.png", "48": "icons/icon48.png" }
+  },
+  "options_page": "options.html"
+}

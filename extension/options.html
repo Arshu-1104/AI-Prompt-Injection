@@ -1,0 +1,15 @@
+﻿<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>PromptGuard Settings</title><style>body{font-family:system-ui;margin:24px;max-width:560px}label{display:block;margin:14px 0 6px}input{width:100%;box-sizing:border-box;padding:8px}button{margin-top:12px;padding:8px 12px}.row{display:flex;gap:10px;align-items:center}.row input{width:auto}.msg{margin-top:12px}</style></head>
+<body>
+  <h1>PromptGuard Settings</h1>
+  <label for="endpoint">API Endpoint URL</label><input type="url" id="endpoint" placeholder="http://localhost:8000">
+  <label for="apiKey">API Key</label><input type="password" id="apiKey">
+  <button id="testBtn" type="button">Test Connection</button> <span id="testStatus"></span>
+  <label class="row"><input type="checkbox" id="enabled"> Enabled</label>
+  <button id="saveBtn" type="button">Save</button>
+  <div id="msg" class="msg"></div>
+  <p>Text from monitored input fields is sent to your configured PromptGuard endpoint for analysis. No data is sent to any third party.</p>
+  <script src="js/options.js"></script>
+</body>
+</html>

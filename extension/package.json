@@ -1,0 +1,14 @@
+﻿{
+  "scripts": {
+    "copy": "node scripts/copy-static.mjs",
+    "build": "esbuild ././src/content.ts ././src/background.ts ././src/options.ts ././src/popup.ts --bundle --outdir=dist/js --platform=browser --target=chrome110 && npm run copy",
+    "watch": "npm run build -- --watch"
+  },
+  "devDependencies": {
+    "@types/chrome": "latest",
+    "esbuild": "latest",
+    "typescript": "latest"
+  }
+}
+
+
