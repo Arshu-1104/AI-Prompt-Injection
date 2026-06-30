@@ -2,7 +2,7 @@ services:
   - type: web
     name: promptguard-api
     env: python
-    buildCommand: pip install -r requirements.txt && python -m src.load_data && python -m src.train_classical
+    buildCommand: pip install -r requirements.txt
     startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: DATABASE_URL
