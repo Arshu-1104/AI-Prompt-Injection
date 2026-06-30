@@ -4,7 +4,8 @@ src/__pycache__/
 api/__pycache__/
 artifacts/
 data/
-models/
+models/*
+!models/classical_model.pkl
 node_modules/
 dashboard/node_modules/
 dashboard/.next/
