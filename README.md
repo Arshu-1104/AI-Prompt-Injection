@@ -4,6 +4,7 @@
 > DistilBERT, ModernBERT and classical ML.
 > FastAPI backend · Next.js dashboard · Chrome extension
 
+![CI](https://github.com/Arshu-1104/AI-Prompt-Injection/actions/workflows/ci.yml/badge.svg)
 ![Python](https://img.shields.io/badge/Python-3.12-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.110-green)
 ![Next.js](https://img.shields.io/badge/Next.js-15-black)
