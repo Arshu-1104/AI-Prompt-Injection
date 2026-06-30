@@ -56,25 +56,23 @@ _RATE_WINDOW: dict[str, deque[float]] = defaultdict(deque)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Auto-create database tables (works for both SQLite and PostgreSQL)
-    from api.database import Base, engine as db_engine
-    async with db_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
+    import os
     app.state.models_loaded = False
     app.state.analyzers = {}
     try:
         app.state.analyzers["classical"] = PromptAnalyzer(model_type="classical", escalate_on_uncertain=True)
     except Exception:
         pass
-    try:
-        app.state.analyzers["bert"] = PromptAnalyzer(model_type="bert")
-    except Exception:
-        pass
-    try:
-        app.state.analyzers["guard"] = PromptAnalyzer(model_type="guard")
-    except Exception:
-        pass
+    # Skip loading heavy transformer models on memory-constrained deployments
+    if os.environ.get("ENABLE_HEAVY_MODELS", "false").lower() == "true":
+        try:
+            app.state.analyzers["bert"] = PromptAnalyzer(model_type="bert")
+        except Exception:
+            pass
+        try:
+            app.state.analyzers["guard"] = PromptAnalyzer(model_type="guard")
+        except Exception:
+            pass
     app.state.models_loaded = len(app.state.analyzers) > 0
     yield
 
