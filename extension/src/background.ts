@@ -11,8 +11,8 @@ type StoredConfig = { endpoint?: string; apiKey?: string; enabled?: boolean };
 
 function withTimeout(ms: number): { signal: AbortSignal; cancel: () => void } {
   const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), ms);
-  return { signal: controller.signal, cancel: () => window.clearTimeout(timer) };
+  const timer = self.setTimeout(() => controller.abort(), ms);
+  return { signal: controller.signal, cancel: () => self.clearTimeout(timer) };
 }
 
 async function handlePredict(text: string): Promise<MessageResponse> {
@@ -39,7 +39,7 @@ async function handlePredict(text: string): Promise<MessageResponse> {
 }
 
 async function handleHealth(endpoint: string): Promise<MessageResponse> {
-  const timeout = withTimeout(5000);
+  const timeout = withTimeout(15000);
   try {
     const response = await fetch(`${endpoint.replace(/\/$/, "")}/health`, { signal: timeout.signal });
     timeout.cancel();

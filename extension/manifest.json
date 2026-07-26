@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "description": "Real-time prompt injection detection for LLM chat interfaces",
   "permissions": ["storage", "activeTab"],
-  "host_permissions": [],
+  "host_permissions": ["https://ai-prompt-injection.onrender.com/*"],
   "background": { "service_worker": "js/background.js" },
   "content_scripts": [{
     "matches": ["<all_urls>"],
