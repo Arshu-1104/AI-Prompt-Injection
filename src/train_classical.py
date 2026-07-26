@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -18,19 +20,70 @@ try:
     from sklearn.linear_model import LogisticRegression
 
     SKLEARN_AVAILABLE = True
-except Exception:
+    SKLEARN_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover - exercised only when sklearn is broken/missing
     SKLEARN_AVAILABLE = False
+    SKLEARN_IMPORT_ERROR = exc
 
 from src.preprocess import get_train_test_data
 
+logger = logging.getLogger(__name__)
 
 SCORING = ["accuracy", "precision_weighted", "recall_weighted", "f1_weighted"]
 
+_FALLBACK_BANNER = (
+    "\n"
+    "############################################################\n"
+    "#  scikit-learn is NOT available in this environment.     #\n"
+    "#  Training will fall back to RuleBasedClassifier, a      #\n"
+    "#  keyword-only stub. Its predictions are NOT a real ML   #\n"
+    "#  model and should never be used in production.          #\n"
+    "############################################################\n"
+)
+
 
 class RuleBasedClassifier:
+    """Keyword-matching stub. Only ever used when sklearn is unavailable AND the
+    caller has explicitly opted in via allow_rule_based_fallback=True. Not a
+    substitute for a trained model — coverage is limited to the phrases below.
+    """
+
     classes_ = np.array(["SAFE", "SUSPICIOUS", "MALICIOUS"])
-    suspicious_terms = ["ignore previous", "disregard", "pretend", "new task", "forget your rules"]
-    malicious_terms = ["jailbreak", "bypass", "system prompt", "leak", "override policy", "dan mode"]
+
+    suspicious_terms = [
+        "ignore previous",
+        "ignore all previous",
+        "ignore prior",
+        "disregard",
+        "pretend",
+        "act as if",
+        "new task",
+        "forget your rules",
+        "forget the rules",
+        "new instructions",
+        "role play",
+        "roleplay",
+        "hypothetically",
+        "for research purposes",
+        "as an ai without",
+    ]
+    malicious_terms = [
+        "jailbreak",
+        "bypass",
+        "system prompt",
+        "leak",
+        "override policy",
+        "override your",
+        "dan mode",
+        "developer mode",
+        "no restrictions",
+        "without restrictions",
+        "reveal your instructions",
+        "reveal the system prompt",
+        "exfiltrate",
+        "extract the api key",
+        "print your instructions",
+    ]
 
     def fit(self, x_train: Any, y_train: Any) -> "RuleBasedClassifier":
         _ = (x_train, y_train)
@@ -55,7 +108,29 @@ class RuleBasedClassifier:
         return self.classes_[np.argmax(probs, axis=1)]
 
 
-def train_classical(random_state: int = 42) -> dict:
+def train_classical(random_state: int = 42, allow_rule_based_fallback: bool = False) -> dict:
+    """Train the classical model.
+
+    Raises RuntimeError if scikit-learn is unavailable, unless the caller
+    explicitly passes allow_rule_based_fallback=True (e.g. for a quick local
+    smoke test). This prevents silently shipping the keyword-only stub as if
+    it were a trained model.
+    """
+    if not SKLEARN_AVAILABLE:
+        logger.warning(_FALLBACK_BANNER)
+        print(_FALLBACK_BANNER, file=sys.stderr)
+        print(f"Import error was: {SKLEARN_IMPORT_ERROR!r}", file=sys.stderr)
+        if not allow_rule_based_fallback:
+            raise RuntimeError(
+                "scikit-learn is not importable in this environment, so "
+                "train_classical() refused to silently fall back to the "
+                "keyword-only RuleBasedClassifier. Fix your environment "
+                "(e.g. `pip install -r requirements.txt` inside the active "
+                "venv/container) and retrain. If you really want the "
+                "keyword-only stub for a quick offline test, call "
+                "train_classical(allow_rule_based_fallback=True) explicitly."
+            ) from SKLEARN_IMPORT_ERROR
+
     train_df, test_df = get_train_test_data(random_state=random_state)
     x_train = train_df["text"]
     y_train = train_df["label"]

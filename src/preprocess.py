@@ -16,10 +16,11 @@ ATTACK_PATTERNS = [
     r"you\s+are\s+now\s+(an?\s+)?(unrestricted|uncensored|free|jailbroken)",
     r"act\s+as\s+(an?\s+)?(unrestricted|uncensored|jailbroken|dan|root|admin|system|unfiltered)",
     r"pretend\s+to\s+be\s+(an?\s+)?(unrestricted|uncensored|ai\s+with\s+no|root|admin|unfiltered)",
+    r"pretend\s+(hypothetically\s+)?(that\s+)?(you|it)\s+(had|have|has)\s+no\s+(restrictions?|rules?|limits?|filters?)",
     r"jailbreak",
     r"dan\s+mode",
     r"developer\s+mode",
-    r"(reveal|show|print|output)\s+(the\s+)?(system\s+prompt|hidden\s+prompt)",
+    r"(reveal|show|print|output|give|tell)\s+(me\s+)?(your\s+|the\s+)?(system\s+prompt|hidden\s+prompt)",
     r"(reveal|show|print|output)\s+(the\s+)?hidden\s+(secrets?|data|prompt|info)",
     r"reveal\s+(the\s+)?hidden",
     r"execute\s+hidden\s+instructions?",
@@ -29,6 +30,11 @@ ATTACK_PATTERNS = [
     r"output\s+the\s+confidential",
     r"with\s+no\s+policy\s+filters?",
     r"run\s+unrestricted",
+    r"repeat\s+everything\s+(above|before)",
+    r"repeat\s+(the\s+)?(text|content|instructions?)\s+above",
+    r"what\s+(were|are)\s+your\s+(original\s+|initial\s+)?instructions?",
+    r"what\s+was\s+your\s+(original\s+|initial\s+)?(system\s+)?prompt",
+    r"no\s+restrictions?\b",
 ]
 
 BENIGN_ALLOWLIST = [
