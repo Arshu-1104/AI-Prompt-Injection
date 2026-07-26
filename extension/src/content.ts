@@ -1,4 +1,4 @@
-﻿type PredictResponse = { status: "ok" | "unconfigured" | "timeout" | "error"; label?: string; confidence?: number; risk_score?: number; attack_patterns?: string[]; message?: string };
+﻿type PredictResponse = { status: "ok" | "unconfigured" | "timeout" | "error" | "offline"; label?: string; confidence?: number; risk_score?: number; attack_patterns?: string[]; message?: string };
 
 type BadgeParts = { root: HTMLDivElement; badge: HTMLDivElement; tooltip: HTMLDivElement };
 
@@ -55,8 +55,8 @@ function createBadge(input: HTMLElement): BadgeParts {
   return { root, badge, tooltip };
 }
 
-function updateBadge(parts: BadgeParts, response: PredictResponse): void {
-  if (response.status === "unconfigured") {
+function updateBadge(parts: BadgeParts, response?: PredictResponse): void {
+  if (!response || response.status === "unconfigured") {
     parts.badge.className = "badge hidden";
     return;
   }
@@ -72,6 +72,27 @@ function updateBadge(parts: BadgeParts, response: PredictResponse): void {
   parts.tooltip.textContent = (response.attack_patterns ?? []).join(", ") || "No patterns listed";
 }
 
+// Guards against the "extension context invalidated" case: chrome.runtime
+// becomes undefined in an already-injected content script after the
+// extension is reloaded/updated but the tab hasn't been refreshed.
+function sendPredict(text: string, parts: BadgeParts): void {
+  if (!chrome.runtime?.id) {
+    updateBadge(parts, { status: "offline" });
+    return;
+  }
+  try {
+    chrome.runtime.sendMessage({ type: "predict", payload: { text } }, (response: PredictResponse) => {
+      if (chrome.runtime.lastError) {
+        updateBadge(parts, { status: "timeout" });
+        return;
+      }
+      updateBadge(parts, response);
+    });
+  } catch (e) {
+    updateBadge(parts, { status: "offline" });
+  }
+}
+
 function decorate(input: Element): void {
   if (!(input instanceof HTMLElement)) return;
   input.dataset[decorated] = "1";
@@ -84,7 +105,7 @@ function decorate(input: Element): void {
       if (!text) { parts.badge.className = "badge hidden"; return; }
       parts.badge.className = "badge loading";
       parts.badge.textContent = "Checking";
-      chrome.runtime.sendMessage({ type: "predict", payload: { text } }, (response: PredictResponse) => updateBadge(parts, response));
+      sendPredict(text, parts);
     }, 500));
   };
   input.addEventListener("input", listener);
