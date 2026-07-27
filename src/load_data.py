@@ -274,6 +274,21 @@ def _inject_subtle_phrase(text: str, rng: np.random.Generator) -> str:
     return f"{prefix}Also, {phrase}."
 
 
+# Fraction of SAFE rows converted into synthetic SUSPICIOUS examples.
+# Raised from 0.15 -> 0.35: the source HF dataset is ~60% MALICIOUS / 40% SAFE
+# with NO suspicious/ambiguous class at all, so SUSPICIOUS previously ended up
+# as only ~5-6% of the final training set (dwarfed further once
+# augment_with_evasions() added more MALICIOUS duplicates on top). That
+# imbalance meant the classifier had little incentive to ever predict
+# SUSPICIOUS and instead collapsed to choosing between SAFE and MALICIOUS.
+SUSPICIOUS_FRACTION_OF_SAFE = 0.35
+
+# Fraction of MALICIOUS rows duplicated as leetspeak evasions. Lowered from
+# 0.20 -> 0.10 since this was compounding the same imbalance by inflating the
+# already-majority MALICIOUS class further relative to SUSPICIOUS and SAFE.
+EVASION_AUGMENT_FRACTION = 0.10
+
+
 def build_dataset(random_state: int = 42) -> pd.DataFrame:
     if DATASETS_AVAILABLE:
         dataset = load_dataset("neuralchemy/Prompt-injection-dataset")
@@ -313,7 +328,7 @@ def build_dataset(random_state: int = 42) -> pd.DataFrame:
 
     safe_mask = df["label"] == "SAFE"
     safe_df = df[safe_mask].copy()
-    suspicious_n = max(1, int(len(safe_df) * 0.15))
+    suspicious_n = max(1, int(len(safe_df) * SUSPICIOUS_FRACTION_OF_SAFE))
     rng = np.random.default_rng(random_state)
     suspicious_idx = rng.choice(safe_df.index.to_numpy(), size=suspicious_n, replace=False)
 
@@ -352,7 +367,7 @@ def build_dataset(random_state: int = 42) -> pd.DataFrame:
 def augment_with_evasions(df: pd.DataFrame) -> pd.DataFrame:
     LEET = str.maketrans("aeiost", "431057")
     malicious = df[df["label"] == "MALICIOUS"]
-    sample = malicious.sample(frac=0.20, random_state=42)
+    sample = malicious.sample(frac=EVASION_AUGMENT_FRACTION, random_state=42)
     variants = sample.copy()
     variants["text"] = variants["text"].map(lambda t: t.translate(LEET))
     variants["original_label"] = "leet_augmented"

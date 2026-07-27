@@ -142,10 +142,22 @@ def train_classical(random_state: int = 42, allow_rule_based_fallback: bool = Fa
         nb_vectorizer = TfidfVectorizer(
             max_features=20000, ngram_range=(1, 2), sublinear_tf=False
         )
+        # class_weight="balanced" is the key fix here: the training data is
+        # skewed toward MALICIOUS (source dataset ~60/40 malicious/safe, plus
+        # leetspeak augmentation on top) with SUSPICIOUS as a thin minority
+        # class. Without reweighting, both classifiers had little incentive
+        # to ever predict SUSPICIOUS and would default toward the majority
+        # classes even on ambiguous or borderline-benign text.
+        # MultinomialNB has no class_weight parameter, so it's left as-is.
         models = {
-            "logistic_regression": LogisticRegression(max_iter=1000, C=1.0, random_state=random_state),
+            "logistic_regression": LogisticRegression(
+                max_iter=1000, C=1.0, random_state=random_state, class_weight="balanced"
+            ),
             "random_forest": RandomForestClassifier(
-                n_estimators=200, max_depth=10, random_state=random_state
+                n_estimators=200,
+                max_depth=10,
+                random_state=random_state,
+                class_weight="balanced",
             ),
             "multinomial_nb": MultinomialNB(),
         }
