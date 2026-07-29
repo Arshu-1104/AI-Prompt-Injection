@@ -5,6 +5,10 @@ api/__pycache__/
 artifacts/
 data/
 models/*
+!models/bert_model/
+!models/guard_model/
+!models/bert_model/
+!models/guard_model/
 !models/classical_model.pkl
 node_modules/
 dashboard/node_modules/
