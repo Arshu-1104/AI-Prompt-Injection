@@ -20,3 +20,5 @@ extension/dist/
 *.pyc
 .DS_Store
 artifacts/
+models/bert_model/checkpoints/
+models/guard_model/checkpoints/
