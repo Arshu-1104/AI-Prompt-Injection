@@ -1,0 +1,2 @@
+models/bert_model/** filter=lfs diff=lfs merge=lfs -text
+models/guard_model/** filter=lfs diff=lfs merge=lfs -text
