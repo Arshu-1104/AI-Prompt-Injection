@@ -8,6 +8,7 @@ from typing import Any
 
 import joblib
 import numpy as np
+import pandas as pd
 
 try:
     from sklearn.base import clone
@@ -40,6 +41,27 @@ _FALLBACK_BANNER = (
     "#  model and should never be used in production.          #\n"
     "############################################################\n"
 )
+
+# Augment training data with realistic short/everyday benign inputs.
+# The source dataset's SAFE class skews long and templated ("Generate a X
+# for Y"), with no true short-form conversational text — so the model never
+# learned what an ordinary greeting or simple question looks like, and
+# short inputs like "Hello" default toward the MALICIOUS majority signal.
+EVERYDAY_SAFE_EXAMPLES = [
+    "Hello", "Hi there", "Hey, how are you?", "Good morning", "Thanks so much",
+    "Thank you for your help", "What's the weather like today?", "How do I reset my password?",
+    "Can you help me write a Python function?", "What's the capital of France?",
+    "Can you summarize this article for me?", "What time is it in Tokyo?",
+    "Give me a recipe for pasta", "How do I improve my resume?",
+    "Explain quantum computing simply", "What's a good book to read?",
+    "Can you help me debug this code?", "How do plants photosynthesize?",
+    "What's the square root of 144?", "Tell me a fun fact about space",
+    "How do I say hello in French?", "What's the best way to learn guitar?",
+    "Can you proofread this email?", "What's 15% of 200?",
+    "How's your day going?", "See you later", "Sounds good, thanks",
+    "Can you explain this concept to me?", "I need help with my homework",
+    "What's a healthy breakfast option?",
+]
 
 
 class RuleBasedClassifier:
@@ -137,6 +159,17 @@ def train_classical(random_state: int = 42, allow_rule_based_fallback: bool = Fa
     x_test = test_df["text"]
     y_test = test_df["label"]
 
+    # Inject everyday SAFE examples into the training set only (never the
+    # held-out test set, to keep evaluation metrics honest).
+    EVERYDAY_SAFE_REPEATED = EVERYDAY_SAFE_EXAMPLES * 8
+
+    x_train = pd.concat(
+        [x_train, pd.Series(EVERYDAY_SAFE_REPEATED)], ignore_index=True
+    )
+    y_train = pd.concat(
+        [y_train, pd.Series(["SAFE"] * len(EVERYDAY_SAFE_REPEATED))], ignore_index=True
+    )
+
     if SKLEARN_AVAILABLE:
         vectorizer = TfidfVectorizer(max_features=20000, ngram_range=(1, 3), sublinear_tf=True)
         nb_vectorizer = TfidfVectorizer(
@@ -148,7 +181,13 @@ def train_classical(random_state: int = 42, allow_rule_based_fallback: bool = Fa
         # class. Without reweighting, both classifiers had little incentive
         # to ever predict SUSPICIOUS and would default toward the majority
         # classes even on ambiguous or borderline-benign text.
-        # MultinomialNB has no class_weight parameter, so it's left as-is.
+        #
+        # MultinomialNB has no class_weight parameter. Left uncorrected, it
+        # learns its class priors directly from the raw 60/40-skewed training
+        # data, so a short/neutral/out-of-vocabulary input (e.g. "Hello")
+        # falls back on that skewed prior instead of a neutral one and gets
+        # pushed toward MALICIOUS. Passing an explicit uniform class_prior
+        # fixes this the same way class_weight="balanced" does above.
         models = {
             "logistic_regression": LogisticRegression(
                 max_iter=1000, C=1.0, random_state=random_state, class_weight="balanced"
@@ -159,7 +198,7 @@ def train_classical(random_state: int = 42, allow_rule_based_fallback: bool = Fa
                 random_state=random_state,
                 class_weight="balanced",
             ),
-            "multinomial_nb": MultinomialNB(),
+            "multinomial_nb": MultinomialNB(class_prior=[1 / 3, 1 / 3, 1 / 3]),
         }
 
         cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_state)
