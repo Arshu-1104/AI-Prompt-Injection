@@ -45,7 +45,7 @@ class Base(DeclarativeBase):
 
 class ApiKey(Base):
     __tablename__ = "api_keys"
-    id: Mapped[str] = mapped_column(_sa.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    id: Mapped[str] = _uuid_col(primary_key=True)
     key_hash: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     org_name: Mapped[str] = mapped_column(String(200), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -55,7 +55,7 @@ class ApiKey(Base):
 
 class Prediction(Base):
     __tablename__ = "predictions"
-    id: Mapped[str] = mapped_column(_sa.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    id: Mapped[str] = _uuid_col(primary_key=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     api_key_id: Mapped[str | None] = mapped_column(_sa.String(36), _sa.ForeignKey("api_keys.id"), nullable=True)
     input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
