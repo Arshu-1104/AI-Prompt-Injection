@@ -1,8 +1,8 @@
 import { auth } from "../../../../../auth";
 import { NextRequest, NextResponse } from "next/server";
 
-async function proxyRequest(req: NextRequest, pathSegments: string[]) {
-  const session = await auth();
+async function proxyRequest(req: NextRequest & { auth?: any }, pathSegments: string[]) {
+  const session = req.auth;
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const path = pathSegments.join("/");
@@ -30,18 +30,22 @@ async function proxyRequest(req: NextRequest, pathSegments: string[]) {
 
 type RouteContext = { params: Promise<{ path: string[] }> };
 
-export async function GET(req: NextRequest, context: RouteContext) {
-  return proxyRequest(req, (await context.params).path);
-}
+export const GET = auth(async (req: any, context: any) => {
+  const params = await (context as RouteContext).params;
+  return proxyRequest(req, params.path);
+});
 
-export async function POST(req: NextRequest, context: RouteContext) {
-  return proxyRequest(req, (await context.params).path);
-}
+export const POST = auth(async (req: any, context: any) => {
+  const params = await (context as RouteContext).params;
+  return proxyRequest(req, params.path);
+});
 
-export async function PATCH(req: NextRequest, context: RouteContext) {
-  return proxyRequest(req, (await context.params).path);
-}
+export const PATCH = auth(async (req: any, context: any) => {
+  const params = await (context as RouteContext).params;
+  return proxyRequest(req, params.path);
+});
 
-export async function DELETE(req: NextRequest, context: RouteContext) {
-  return proxyRequest(req, (await context.params).path);
-}
+export const DELETE = auth(async (req: any, context: any) => {
+  const params = await (context as RouteContext).params;
+  return proxyRequest(req, params.path);
+});
