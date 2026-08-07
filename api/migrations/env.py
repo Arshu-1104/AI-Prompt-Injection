@@ -9,6 +9,7 @@ from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from api.database import Base
+from api.db_url import normalize_async_db_url
 
 config = context.config
 if config.config_file_name is not None:
@@ -18,7 +19,7 @@ target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
-    url = os.environ["DATABASE_URL"]
+    url, _connect_args = normalize_async_db_url(os.environ["DATABASE_URL"])
     context.configure(url=url, target_metadata=target_metadata, literal_binds=True)
     with context.begin_transaction():
         context.run_migrations()
@@ -31,8 +32,8 @@ def do_run_migrations(connection) -> None:
 
 
 async def run_async_migrations() -> None:
-    url = os.environ["DATABASE_URL"]
-    connectable = create_async_engine(url, poolclass=pool.NullPool)
+    url, connect_args = normalize_async_db_url(os.environ["DATABASE_URL"])
+    connectable = create_async_engine(url, poolclass=pool.NullPool, connect_args=connect_args)
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)
     await connectable.dispose()

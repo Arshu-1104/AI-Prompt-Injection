@@ -7,13 +7,19 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 # Use PostgreSQL if DATABASE_URL is set, otherwise fall back to local SQLite
+from api.db_url import normalize_async_db_url
+
 _DATABASE_URL = os.environ.get("DATABASE_URL")
 if _DATABASE_URL:
-    DATABASE_URL = _DATABASE_URL
-    # asyncpg dialect for PostgreSQL
-    if DATABASE_URL.startswith("postgresql://"):
-        DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
-    _engine_kwargs: dict = {"echo": False, "pool_pre_ping": True}
+    DATABASE_URL, _connect_args = normalize_async_db_url(_DATABASE_URL)
+    _engine_kwargs: dict = {
+        "echo": False,
+        "pool_pre_ping": True,
+        # Recycle connections before Neon-style providers scale-to-zero and
+        # silently drop them; avoids "SSL SYSCALL error: EOF detected".
+        "pool_recycle": 280,
+        "connect_args": _connect_args,
+    }
 else:
     _db_path = Path(__file__).resolve().parents[1] / "artifacts" / "promptguard.db"
     _db_path.parent.mkdir(parents=True, exist_ok=True)
