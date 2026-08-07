@@ -3,15 +3,20 @@ import { NextRequest, NextResponse } from "next/server";
 
 async function proxyRequest(req: any, pathSegments: string[]) {
   const session = req.auth;
-  // TEMP DIAGNOSTIC — remove once the 401 is resolved. Logs booleans only,
-  // never secret values, so this is safe to leave in Render's log stream
-  // for a few minutes while debugging.
+  // TEMP DIAGNOSTIC — remove once the 401 is resolved. Logs cookie NAMES
+  // only (never values) — safe to leave in Render's log stream.
+  const cookieHeader: string = req.headers.get("cookie") ?? "";
+  const cookieNames = cookieHeader
+    .split(";")
+    .map((c) => c.trim().split("=")[0])
+    .filter(Boolean);
   console.log("[proxy debug]", {
     hasSession: Boolean(session),
     path: pathSegments.join("/"),
     hasApiUrl: Boolean(process.env.API_URL),
     hasAdminKey: Boolean(process.env.ADMIN_SECRET_KEY),
     hasPromptguardKey: Boolean(process.env.PROMPTGUARD_API_KEY),
+    cookieNames,
   });
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
