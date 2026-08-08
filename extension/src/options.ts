@@ -1,4 +1,4 @@
-﻿type HealthResponse = { status: "ok" | "error" | "timeout"; message?: string };
+type HealthResponse = { status: "ok" | "error" | "timeout"; message?: string };
 type Stored = { endpoint?: string; apiKey?: string; enabled?: boolean };
 
 const endpoint = document.getElementById("endpoint") as HTMLInputElement;
@@ -32,3 +32,5 @@ saveBtn.addEventListener("click", () => {
     msg.textContent = "Invalid URL";
   }
 });
+
+export {};

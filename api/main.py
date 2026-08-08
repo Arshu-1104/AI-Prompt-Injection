@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import json
@@ -21,7 +21,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import PlainTextResponse
 
 from api.auth import generate_api_key, get_current_api_key, hash_input, hash_key, require_admin
-from api.database import ApiKey, AsyncSessionLocal, Prediction, get_db
+from api.database import ApiKey, AsyncSessionLocal, Base, Prediction, engine, get_db
 from src.predict import PromptAnalyzer
 from src.preprocess import ATTACK_PATTERNS
 
@@ -32,13 +32,13 @@ class PredictRequest(BaseModel):
 
 
 class BatchPredictRequest(BaseModel):
-    texts: list[str]
+    texts: list[str] = Field(min_length=1, max_length=100)
     model: Literal["classical", "bert", "guard"] = "classical"
 
 
 class CreateKeyRequest(BaseModel):
-    org_name: str
-    rate_limit_per_minute: int = 60
+    org_name: str = Field(min_length=1, max_length=200)
+    rate_limit_per_minute: int = Field(default=60, ge=1, le=10_000)
 
 
 class SettingsPayload(BaseModel):
@@ -57,6 +57,8 @@ _RATE_WINDOW: dict[str, deque[float]] = defaultdict(deque)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     import os
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
     app.state.models_loaded = False
     app.state.analyzers = {}
     try:
@@ -91,7 +93,9 @@ app.add_middleware(SlowAPIMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    # The API is bearer-token based, so credentialed wildcard CORS is both
+    # unnecessary and invalid in browsers.
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -233,6 +237,7 @@ async def create_api_key(payload: CreateKeyRequest, db: AsyncSession = Depends(g
     )
     db.add(key)
     await db.commit()
+    await db.refresh(key)
     return {"id": str(key.id), "key": raw, "warning": "Store this key now; it will not be shown again."}
 
 

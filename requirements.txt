@@ -1,6 +1,8 @@
 pandas>=2.0
 numpy>=1.24
-scikit-learn==1.6.1
+# scikit-learn 1.6.1 predates CPython 3.14 wheels on Windows.
+scikit-learn==1.6.1; python_version < "3.14"
+scikit-learn>=1.9,<2; python_version >= "3.14"
 transformers>=4.38,<4.52
 torch>=2.1
 datasets>=2.18

@@ -1,4 +1,4 @@
-﻿type PredictResponse = { status: "ok" | "unconfigured" | "timeout" | "error" | "offline"; label?: string; confidence?: number; risk_score?: number; attack_patterns?: string[]; message?: string };
+type PredictResponse = { status: "ok" | "unconfigured" | "timeout" | "error" | "offline"; label?: string; confidence?: number; risk_score?: number; attack_patterns?: string[]; message?: string };
 
 type BadgeParts = { root: HTMLDivElement; badge: HTMLDivElement; tooltip: HTMLDivElement };
 
@@ -10,6 +10,7 @@ const SITE_SELECTORS = [
   "rich-textarea div[contenteditable='true']",
 ];
 
+const isPromptGuardDashboard = (location.hostname === "localhost" || location.hostname === "127.0.0.1") && location.port === "3000";
 const decorated = "pgBadge";
 const debounceTimers = new WeakMap<Element, number>();
 
@@ -112,7 +113,10 @@ function decorate(input: Element): void {
   input.addEventListener("keyup", listener);
 }
 
-function scan(): void { findInputs().forEach(decorate); }
+function scan(): void {
+  if (isPromptGuardDashboard) return;
+  findInputs().forEach(decorate);
+}
 
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", scan);

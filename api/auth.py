@@ -1,5 +1,6 @@
-﻿from __future__ import annotations
-import hashlib, os, secrets
+from __future__ import annotations
+import hashlib, hmac, os, secrets
+from pathlib import Path
 import bcrypt
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy import select
@@ -24,6 +25,20 @@ async def get_current_api_key(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> ApiKey:
+    # Dashboard requests use the server-only admin credential; external clients
+    # must continue to authenticate with a bearer API key.
+    admin_key = request.headers.get("X-Admin-Key", "")
+    if ADMIN_SECRET and hmac.compare_digest(admin_key, ADMIN_SECRET):
+        result = await db.execute(select(ApiKey).where(ApiKey.org_name == "__dashboard__"))
+        dashboard_key = result.scalar_one_or_none()
+        if dashboard_key:
+            return dashboard_key
+        dashboard_key = ApiKey(key_hash=hash_key(generate_api_key()), org_name="__dashboard__", rate_limit_per_minute=600)
+        db.add(dashboard_key)
+        await db.commit()
+        await db.refresh(dashboard_key)
+        return dashboard_key
+
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing API key")
@@ -37,5 +52,5 @@ async def get_current_api_key(
 
 def require_admin(request: Request) -> None:
     provided = request.headers.get("X-Admin-Key", "")
-    if not ADMIN_SECRET or provided != ADMIN_SECRET:
+    if not ADMIN_SECRET or not hmac.compare_digest(provided, ADMIN_SECRET):
         raise HTTPException(status_code=403, detail="Admin access required")

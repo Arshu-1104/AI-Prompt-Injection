@@ -1,4 +1,4 @@
-﻿type Stored = { enabled?: boolean; endpoint?: string };
+type Stored = { enabled?: boolean; endpoint?: string };
 type LastResult = { label?: string; risk_score?: number };
 
 const statusEl = document.getElementById("status") as HTMLDivElement;
@@ -17,3 +17,5 @@ void chrome.storage.local.get({ lastResult: null }).then((data: { lastResult?: L
 
 toggle.addEventListener("change", () => { void chrome.storage.sync.set({ enabled: toggle.checked }); });
 settingsLink.addEventListener("click", (event) => { event.preventDefault(); chrome.runtime.openOptionsPage(); });
+
+export {};
