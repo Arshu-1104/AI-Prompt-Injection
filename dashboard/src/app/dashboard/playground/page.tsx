@@ -32,7 +32,16 @@ export default function PlaygroundPage() {
       <h1 className="text-2xl font-semibold">Playground</h1>
       <textarea className="min-h-40 w-full rounded-md border bg-white p-3" value={text} onChange={(event) => setText(event.target.value)} />
       <div className="flex gap-4">
-        {["classical", "bert", "guard"].map((item) => <label key={item} className="flex items-center gap-2 text-sm"><input type="radio" checked={model === item} onChange={() => setModel(item)} />{item}</label>)}
+        {[
+          { id: "classical", available: true },
+          { id: "bert", available: false },
+          { id: "guard", available: false },
+        ].map((item) => (
+          <label key={item.id} className={`flex items-center gap-2 text-sm ${item.available ? "" : "text-slate-400"}`}>
+            <input type="radio" checked={model === item.id} disabled={!item.available} onChange={() => item.available && setModel(item.id)} />
+            {item.id}{!item.available ? " (coming soon)" : ""}
+          </label>
+        ))}
       </div>
       <button className="rounded-md bg-slate-950 px-4 py-2 text-white" onClick={analyze}>Analyze</button>
       {error ? <p className="text-sm text-malicious">{error}</p> : null}
