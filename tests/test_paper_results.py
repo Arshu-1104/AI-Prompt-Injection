@@ -54,7 +54,9 @@ def test_evaluate_predictor_metrics_and_categories(monkeypatch):
     assert result["binary"]["accuracy"] == pytest.approx(0.5)
     assert result["binary"]["false_positive_rate"] == pytest.approx(0.5)
     assert result["three_class"]["n_samples"] == 5
-    assert result["dataset_categories"]["benign"] == {"n": 2, "detection_accuracy": 0.5}
+    benign = result["dataset_categories"]["benign"]
+    assert (benign["n"], benign["detection_accuracy"]) == (2, 0.5)
+    assert benign["wilson95"][0] < 0.5 < benign["wilson95"][1]
     assert set(result["adversarial_categories"]) >= {"benign", "direct_override"}
 
 
@@ -77,5 +79,5 @@ def test_aggregate_ignores_failed_runs_and_tables_render():
     tables = pr.build_tables({"models": {"classical": {**result, "summary": summary}}})
     assert {"binary_headline", "three_class", "per_class_f1", "robustness_by_category"} <= set(tables)
     columns, rows, _ = tables["robustness_by_category"]
-    assert columns[:2] == ["category", "n"] and rows[0][0] == "jailbreak"
+    assert columns[:2] == ["category", "n"] and rows[0][0] == "jailbreak †"  # n < 20 flagged
     assert "\\pm" in pr.to_latex(*tables["binary_headline"][:2], "c", "tab:x")

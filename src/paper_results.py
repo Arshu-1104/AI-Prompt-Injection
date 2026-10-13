@@ -39,9 +39,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from src.metrics import LABELS, evaluate_split, labels_from_probs
+from src.metrics import LABELS, evaluate_split, labels_from_probs, wilson_interval
 from src.preprocess import clean_text, get_splits
-from src.robustness import ADVERSARIAL_PROMPTS
+from src.robustness import ADVERSARIAL_PROMPTS, LOW_CONFIDENCE_N
 
 ROOT = Path(__file__).resolve().parents[1]
 ARTIFACTS_DIR = ROOT / "artifacts"
@@ -165,7 +165,11 @@ def evaluate_predictor(predictor, test_df: pd.DataFrame, categories: pd.Series) 
         [to_binary(t) == to_binary(p) for t, p in zip(test_df["label"], y_pred)], index=test_df.index
     )
     result["dataset_categories"] = {
-        str(cat): {"n": int(mask.sum()), "detection_accuracy": float(correct[mask].mean())}
+        str(cat): {
+            "n": int(mask.sum()),
+            "detection_accuracy": float(correct[mask].mean()),
+            "wilson95": list(wilson_interval(int(correct[mask].sum()), int(mask.sum()))),
+        }
         for cat, mask in ((c, categories == c) for c in sorted(categories.unique()))
     }
 
@@ -181,6 +185,7 @@ def evaluate_predictor(predictor, test_df: pd.DataFrame, categories: pd.Series) 
         cat: {
             "n": e["n"],
             "detection_accuracy": e["binary_correct"] / e["n"],
+            "wilson95": list(wilson_interval(e["binary_correct"], e["n"])),
             "exact_accuracy": e["exact_correct"] / e["n"],
         }
         for cat, e in sorted(adversarial.items())
@@ -297,6 +302,8 @@ def aggregate(model_result: dict) -> dict:
             c: {
                 "n": ok[0][key][c]["n"],
                 "detection_accuracy": summarize_values([r[key][c]["detection_accuracy"] for r in ok]),
+                "wilson95": ok[0][key][c].get("wilson95") if len(ok) == 1 else None,
+                "low_confidence": ok[0][key][c]["n"] < LOW_CONFIDENCE_N,
             }
             for c in cats
         }
@@ -396,8 +403,20 @@ def build_tables(results: dict) -> dict[str, tuple[list[str], list[list[str]], s
         rows = []
         for c in cats:
             n = next(summ[m][key][c]["n"] for m in models if c in summ[m][key])
-            rows.append([c, str(n)] + [fmt_stat(summ[m][key].get(c, {}).get("detection_accuracy"), 3) for m in models])
-        tables[name] = (["category", "n"] + [DISPLAY_NAMES[m] for m in models], rows, f"{caption} {seeds_note}.")
+            cells = []
+            for m in models:
+                stat = summ[m][key].get(c, {})
+                cell = fmt_stat(stat.get("detection_accuracy"), 3)
+                if stat.get("wilson95") and summ[m]["n_seeds_ok"] == 1:
+                    lo, hi = stat["wilson95"]
+                    cell += f" (Wilson {lo:.3f}-{hi:.3f})"
+                cells.append(cell)
+            rows.append([c + (" †" if n < LOW_CONFIDENCE_N else ""), str(n)] + cells)
+        tables[name] = (
+            ["category", "n"] + [DISPLAY_NAMES[m] for m in models],
+            rows,
+            f"{caption} {seeds_note}; Wilson 95% interval shown for single runs; † = n < {LOW_CONFIDENCE_N}, low confidence.",
+        )
     return tables
 
 

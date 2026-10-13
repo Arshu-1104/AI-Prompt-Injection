@@ -6,7 +6,7 @@ import pytest
 
 import src.model_sources as ms
 from api.db_url import normalize_async_db_url
-from src.metrics import compute_ece, summarize_predictions
+from src.metrics import compute_ece, summarize_predictions, wilson_interval
 from src.preprocess import clean_text, highlight_attack_patterns
 from src.train_guard_model import SPEC
 from src.transformer_training import (
@@ -161,3 +161,11 @@ def test_cap_rows_keeps_every_label():
     capped = _cap_rows(df, 20, seed=0)
     assert len(capped) <= 22
     assert set(capped["label"]) == {"SAFE", "SUSPICIOUS", "MALICIOUS"}
+
+
+def test_wilson_interval_known_values():
+    lo, hi = wilson_interval(7, 10)  # reference: 0.3968 - 0.8922
+    assert lo == pytest.approx(0.3968, abs=1e-4) and hi == pytest.approx(0.8922, abs=1e-4)
+    lo, hi = wilson_interval(10, 10)
+    assert hi == pytest.approx(1.0) and lo == pytest.approx(0.7225, abs=1e-4)
+    assert wilson_interval(0, 0) is None
