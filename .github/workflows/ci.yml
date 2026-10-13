@@ -18,14 +18,22 @@ jobs:
       - run: python -m src.load_data
       - run: python -m src.train_classical
       - name: Robustness check
+        # ROBUSTNESS_BASELINE is a fraction (0-1], e.g. 0.75. The gate reads the
+        # fraction from the JSON report, not the percentage printed to stdout.
+        env:
+          ROBUSTNESS_BASELINE: ${{ vars.ROBUSTNESS_BASELINE }}
         run: |
-          python -m src.robustness > robustness_output.txt
-          cat robustness_output.txt
-          SCORE=$(grep "Robustness score:" robustness_output.txt | grep -oE '[0-9]+\.[0-9]+')
-          echo "Robustness score: $SCORE"
-          BASELINE="${{ vars.ROBUSTNESS_BASELINE }}"
-          if [ -z "$BASELINE" ]; then BASELINE="0.75"; fi
-          python -c "import sys; score=float('$SCORE'); baseline=float('$BASELINE'); sys.exit(0 if score >= baseline else 1)"
+          python -m src.robustness
+          python - <<'EOF'
+          import json, os, sys
+          report = json.load(open("artifacts/robustness_report.json", encoding="utf-8"))
+          score = float(report["robustness_fraction"])
+          baseline = float(os.environ.get("ROBUSTNESS_BASELINE") or 0.75)
+          if not 0 < baseline <= 1:
+              sys.exit(f"ROBUSTNESS_BASELINE must be a fraction in (0, 1], got {baseline}")
+          print(f"Robustness {score:.4f} vs baseline {baseline:.4f}")
+          sys.exit(0 if score >= baseline else 1)
+          EOF
 
   test-dashboard:
     runs-on: ubuntu-latest

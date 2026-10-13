@@ -114,7 +114,10 @@ def main() -> None:
     payload = {
         "total": total,
         "correct": correct_n,
+        # Percentage (0-100), kept for existing readers.
         "robustness_score": robustness_score,
+        # Fraction (0-1); the CI gate compares this against ROBUSTNESS_BASELINE.
+        "robustness_fraction": correct_n / total,
         "failure_cases": failures,
         "by_category": by_category,
     }
