@@ -446,9 +446,62 @@ def build_split(source: pd.DataFrame, split: str) -> pd.DataFrame:
     return out[["text", "label", "hub_label", "derivation", "category", "source", "group_id"]]
 
 
+def dedup_key(text: str) -> str:
+    """What a model actually sees (clean_text: decoded, lowercased, tags stripped,
+    whitespace collapsed). Used to find near-duplicates across splits."""
+    from src.preprocess import clean_text
+
+    return clean_text(text)
+
+
+def remove_cross_split_overlap(built: dict[str, pd.DataFrame]) -> tuple[dict[str, pd.DataFrame], dict]:
+    """Drop rows that would leak between splits; never drop official eval rows.
+
+    1. A derived validation/test row whose dedup key occurs in another split is dropped.
+    2. A train row (original or derived) whose key occurs in validation/test is dropped.
+    3. Original validation/test rows that collide with each other, or any group_id
+       shared between splits, mean the Hub splits themselves leak: raise.
+    Rows whose key is empty (e.g. text that is only a tag like "<|im_start|>")
+    are not treated as duplicates of each other.
+    """
+    built = {split: df.copy() for split, df in built.items()}
+    for df in built.values():
+        df["_key"] = df["text"].map(dedup_key)
+    report: dict[str, dict] = {}
+
+    for split in ("validation", "test"):
+        df = built[split]
+        other_keys = set().union(*(set(built[o]["_key"]) for o in SPLITS if o != split)) - {""}
+        drop = (df["derivation"] != "original") & df["_key"].isin(other_keys)
+        report[split] = {"derived_rows_dropped": int(drop.sum())}
+        built[split] = df[~drop]
+
+    eval_keys = (set(built["validation"]["_key"]) | set(built["test"]["_key"])) - {""}
+    drop = built["train"]["_key"].isin(eval_keys)
+    report["train"] = {
+        "rows_dropped": int(drop.sum()),
+        "by_derivation": {str(k): int(v) for k, v in built["train"].loc[drop, "derivation"].value_counts().items()},
+    }
+    built["train"] = built["train"][~drop]
+
+    val_orig = built["validation"].loc[built["validation"]["derivation"] == "original", "_key"]
+    test_orig = built["test"].loc[built["test"]["derivation"] == "original", "_key"]
+    shared_originals = (set(val_orig) & set(test_orig)) - {""}
+    if shared_originals:
+        raise RuntimeError(f"{len(shared_originals)} original rows occur in both validation and test.")
+    for a in SPLITS:
+        for b in SPLITS:
+            if a < b:
+                shared = set(built[a]["group_id"]) & set(built[b]["group_id"])
+                if shared:
+                    raise RuntimeError(f"{len(shared)} group_ids occur in both {a} and {b}, e.g. {sorted(shared)[:3]}")
+    return {split: df.drop(columns="_key").reset_index(drop=True) for split, df in built.items()}, report
+
+
 def build_dataset(train_config: str = DEFAULT_TRAIN_CONFIG, sources: dict | None = None) -> dict[str, pd.DataFrame]:
     sources = sources if sources is not None else load_official_splits(train_config)
-    return {split: build_split(sources[split], split) for split in SPLITS}
+    built, _ = remove_cross_split_overlap({split: build_split(sources[split], split) for split in SPLITS})
+    return built
 
 
 def _display_path(path: Path) -> str:
@@ -490,7 +543,7 @@ def main(argv: list[str] | None = None) -> None:
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     sources = load_official_splits(args.train_config)
-    built = build_dataset(args.train_config, sources)
+    built, leakage = remove_cross_split_overlap({split: build_split(sources[split], split) for split in SPLITS})
     processed = {}
     for split, frame in built.items():
         path = SPLIT_PATHS[split]
@@ -518,6 +571,8 @@ def main(argv: list[str] | None = None) -> None:
             "evasion_augment_fraction": EVASION_AUGMENT_FRACTION,
             "hand_authored_split_rule": "sha256(text) % 100: 0-79 train, 80-89 validation, 90-99 test",
             "derived_after_split": True,
+            "cross_split_dedup": "clean_text key; derived eval rows and colliding train rows dropped",
+            "leakage_rows_removed": leakage,
         },
         "synthetic_note": SYNTHETIC_NOTE,
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -531,6 +586,7 @@ def main(argv: list[str] | None = None) -> None:
             f"  {split:<10} hub rows={len(sources[split]):>6}  processed rows={info['rows']:>6}  "
             f"labels={info['label_counts']}  derivations={info['derivation_counts']}"
         )
+    print(f"Cross-split overlap removed: {leakage}")
     print(f"Saved {', '.join(p['path'] for p in processed.values())} and {_display_path(META_PATH)}")
 
 

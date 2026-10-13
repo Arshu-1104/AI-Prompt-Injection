@@ -86,6 +86,11 @@ Input Prompt -------->| preprocess.py       |
   to exactly one split by text hash. Leetspeak variants (10% of MALICIOUS rows) and benign hard negatives
   are derived the same way. Each row records its `derivation`
   (`original`, `synthetic_suspicious`, `leet`, `human_suspicious`, `hard_negative`).
+- **No cross-split leakage:** variants stay in their source row's split (same `group_id`). After
+  building, any row whose normalized text (`clean_text`) matches another split is removed: a derived
+  validation/test row is dropped, and a train row matching an evaluation row is dropped. Official
+  validation/test rows are never dropped. Counts are recorded in `dataset_meta.json`, and
+  `tests/test_leakage.py` fails on any text or `group_id` overlap.
 - **Two views in every metrics file:**
   - **binary** SAFE vs MALICIOUS on the original Hub test rows with Hub labels. This is the headline
     for comparison with other work.

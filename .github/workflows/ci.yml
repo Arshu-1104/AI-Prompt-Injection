@@ -15,8 +15,9 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt -r requirements-dev.txt
-      - run: pytest -q
       - run: python -m src.load_data
+      # After load_data so the real-data leakage tests run instead of skipping.
+      - run: pytest -q
       - run: python -m src.train_classical
       - name: Robustness check
         # ROBUSTNESS_BASELINE is a fraction (0-1], e.g. 0.75. The gate reads the
