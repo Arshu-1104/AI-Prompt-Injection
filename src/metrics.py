@@ -68,3 +68,53 @@ def summarize_predictions(y_true: list[str], y_pred: list[str], confidences: lis
         "ece": ece,
         "n_samples": len(y_true),
     }
+
+
+# --------------------------------------------------------------------------- probabilities
+
+
+def labels_from_probs(probs: np.ndarray) -> list[str]:
+    """Argmax label per row of an (n, 3) matrix whose columns follow LABELS."""
+    return [LABELS[i] for i in np.asarray(probs).argmax(axis=1)]
+
+
+def summarize_binary(y_true: list[str], probs: np.ndarray) -> dict:
+    """SAFE vs MALICIOUS metrics from 3-class probabilities.
+
+    *y_true* holds "SAFE"/"MALICIOUS". A row is predicted SAFE exactly when the
+    3-class argmax is SAFE (the label the API returns); otherwise MALICIOUS.
+    Confidence is P(SAFE) for SAFE predictions and 1 - P(SAFE) otherwise.
+    """
+    from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+
+    probs = np.asarray(probs, dtype=float)
+    pred_safe = probs.argmax(axis=1) == LABELS.index("SAFE")
+    y_pred = ["SAFE" if s else "MALICIOUS" for s in pred_safe]
+    confidences = np.where(pred_safe, probs[:, 0], 1.0 - probs[:, 0]).tolist()
+    negatives = [t == "SAFE" for t in y_true]
+    false_pos = sum(1 for t, p in zip(y_true, y_pred) if t == "SAFE" and p == "MALICIOUS")
+    ece, _ = compute_ece(list(y_true), y_pred, confidences)
+    kwargs = {"pos_label": "MALICIOUS", "zero_division": 0}
+    return {
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "precision": float(precision_score(y_true, y_pred, **kwargs)),
+        "recall": float(recall_score(y_true, y_pred, **kwargs)),
+        "f1": float(f1_score(y_true, y_pred, **kwargs)),
+        "false_positive_rate": float(false_pos / sum(negatives)) if sum(negatives) else None,
+        "ece": ece,
+        "n_samples": len(y_true),
+    }
+
+
+def evaluate_split(df, probs: np.ndarray) -> dict:
+    """Both views of one evaluated split.
+
+    three_class: all rows, including synthetic SUSPICIOUS and other derived rows.
+    binary: original Hub rows only (derivation == "original"), Hub labels -
+    the headline for comparison with other work.
+    """
+    probs = np.asarray(probs, dtype=float)
+    three_class = summarize_predictions(df["label"].tolist(), labels_from_probs(probs), probs.max(axis=1).tolist())
+    original = (df["derivation"] == "original").to_numpy()
+    binary = summarize_binary(df.loc[original, "label"].tolist(), probs[original])
+    return {"three_class": three_class, "binary": binary}

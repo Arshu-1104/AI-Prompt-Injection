@@ -68,6 +68,15 @@ ADVERSARIAL_PROMPTS = [
 ]
 
 
+def _training_data_provenance() -> dict | None:
+    """Provenance of the data the classical model was trained on (from its metrics)."""
+    metrics_path = Path(__file__).resolve().parents[1] / "artifacts" / "metrics.json"
+    try:
+        return json.loads(metrics_path.read_text(encoding="utf-8"))["classical_model"]["dataset"]
+    except Exception:
+        return None
+
+
 def main() -> None:
     analyzer = PromptAnalyzer(model_type="classical")
     rows: list[dict] = []
@@ -120,6 +129,7 @@ def main() -> None:
         "robustness_fraction": correct_n / total,
         "failure_cases": failures,
         "by_category": by_category,
+        "dataset": _training_data_provenance(),
     }
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)

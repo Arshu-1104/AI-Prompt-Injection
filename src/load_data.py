@@ -1,20 +1,31 @@
 """Single source of the PromptGuard dataset.
 
-Downloads one pinned file of the Hugging Face dataset, builds the 3-class
-dataset (SAFE / SUSPICIOUS / MALICIOUS) and writes:
+Loads neuralchemy/Prompt-injection-dataset with ``datasets.load_dataset`` at a
+pinned revision and uses the dataset's OFFICIAL splits - no re-splitting:
 
-    data/processed_dataset.csv   text, label, original_label, category
-    data/dataset_meta.json       source name/config/revision/sha256, build params,
-                                 sha256 of the processed CSV
+* train      - from the "full" config by default (``--train-config core`` for
+               the un-augmented 4,391-row train split)
+* validation - official validation split (model selection)
+* test       - official test split (all reported metrics)
 
-Training (classical, bert, guard), evaluation and paper_results all read the
-CSV through src.preprocess.get_train_test_data, which refuses a CSV whose hash
-does not match dataset_meta.json. Every metrics file records
-dataset_provenance() so results can be traced to the exact data and split.
-To move to a newer dataset version, change DATASET_REVISION and rerun.
+Validation and test are identical in both configs.
+
+The Hub dataset is binary (1 = malicious, 0 = benign). PromptGuard's third
+class, SUSPICIOUS, is SYNTHETIC: it is derived after the split and only within
+the same split (SAFE rows with an appended manipulation phrase, plus
+hand-authored samples). Leetspeak variants are derived the same way. Every row
+records its ``derivation``; binary SAFE-vs-MALICIOUS metrics on the original
+Hub rows (derivation == "original") are the headline for comparison with
+other work.
+
+Writes data/{train,validation,test}.csv and data/dataset_meta.json (revision,
+config, split sizes, sha256 per file, license). Readers refuse CSVs whose
+hash does not match the metadata, and every metrics file records
+dataset_provenance().
 """
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 from datetime import datetime, timezone
@@ -26,16 +37,51 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"
-PROCESSED_PATH = DATA_DIR / "processed_dataset.csv"
 META_PATH = DATA_DIR / "dataset_meta.json"
+SPLITS = ("train", "validation", "test")
+SPLIT_PATHS = {split: DATA_DIR / f"{split}.csv" for split in SPLITS}
 
 DATASET_NAME = "neuralchemy/Prompt-injection-dataset"
-DATASET_CONFIG = "core"  # the dataset's default config (what load_dataset(name) returns)
-DATASET_SPLIT = "train"
-DATASET_FILE = "core/train-00000-of-00001.parquet"
 # Pinned Hub commit so every machine builds byte-identical data.
 DATASET_REVISION = "7d70432dfcf47a821612cbf9d34e9d9e3ad20e75"
+TRAIN_CONFIGS = ("full", "core")
+DEFAULT_TRAIN_CONFIG = "full"
 BUILD_SEED = 42
+
+# Split sizes published on the dataset card; loading fails if the Hub differs.
+EXPECTED_SOURCE_ROWS = {
+    ("full", "train"): 14036,
+    ("core", "train"): 4391,
+    ("full", "validation"): 941,
+    ("core", "validation"): 941,
+    ("full", "test"): 942,
+    ("core", "test"): 942,
+}
+
+LICENSE_INFO = {
+    "dataset": "Apache-2.0 (as declared on the dataset card)",
+    "source_licenses": {
+        "NeurAlchemy original attack_db": "Apache-2.0",
+        "HackAPrompt competition": "CC BY 4.0",
+        "WildGuard / JudgeComparison": "Research",
+        "HarmBench behavior goals": "MIT",
+        "HarmBench benign counterparts": "MIT",
+        "Hand-crafted hard negatives": "Apache-2.0",
+    },
+    "caveat": (
+        "The card declares Apache-2.0 but its source table lists WildGuard / JudgeComparison "
+        "(source='wildguard_judgecomp') as 'Research' and HackAPrompt as CC BY 4.0; check those "
+        "terms before any commercial use or redistribution."
+    ),
+}
+
+SYNTHETIC_NOTE = (
+    "The Hub dataset is binary (1 = malicious, 0 = benign). SUSPICIOUS is synthetic: derived by "
+    "PromptGuard after the official split and within each split (SAFE rows with an appended "
+    "manipulation phrase, plus hand-authored samples assigned to one split by text hash). "
+    "Leetspeak variants are derived the same way. Binary SAFE-vs-MALICIOUS metrics on the original "
+    "Hub rows are the headline for comparison with other work."
+)
 
 
 SUBTLE_PHRASES = [
@@ -273,19 +319,6 @@ BENIGN_HARD_NEGATIVES: list[str] = [
 ]
 
 
-def _resolve_text_and_label_columns(df: pd.DataFrame) -> tuple[str, str]:
-    text_candidates = ["text", "prompt", "input", "instruction", "query"]
-    label_candidates = ["label", "target", "is_malicious", "class"]
-
-    text_col = next((col for col in text_candidates if col in df.columns), None)
-    label_col = next((col for col in label_candidates if col in df.columns), None)
-    if text_col is None or label_col is None:
-        raise ValueError(
-            f"Could not infer text/label columns. Available columns: {list(df.columns)}"
-        )
-    return text_col, label_col
-
-
 def _binary_to_str(value: Any) -> str:
     normalized = str(value).strip().lower()
     malicious_tokens = {"1", "true", "malicious", "attack", "inject", "injection"}
@@ -298,19 +331,18 @@ def _inject_subtle_phrase(text: str, rng: np.random.Generator) -> str:
     return f"{prefix}Also, {phrase}."
 
 
-# Fraction of SAFE rows converted into synthetic SUSPICIOUS examples.
-# Raised from 0.15 -> 0.35: the source HF dataset is ~60% MALICIOUS / 40% SAFE
-# with NO suspicious/ambiguous class at all, so SUSPICIOUS previously ended up
-# as only ~5-6% of the final training set (dwarfed further once
-# augment_with_evasions() added more MALICIOUS duplicates on top). That
-# imbalance meant the classifier had little incentive to ever predict
-# SUSPICIOUS and instead collapsed to choosing between SAFE and MALICIOUS.
+# Fraction of SAFE rows (per split) copied into synthetic SUSPICIOUS rows by
+# appending a subtle manipulation phrase. The Hub dataset has no SUSPICIOUS class.
 SUSPICIOUS_FRACTION_OF_SAFE = 0.35
 
-# Fraction of MALICIOUS rows duplicated as leetspeak evasions. Lowered from
-# 0.20 -> 0.10 since this was compounding the same imbalance by inflating the
-# already-majority MALICIOUS class further relative to SUSPICIOUS and SAFE.
+# Fraction of MALICIOUS rows (per split) copied as leetspeak evasions.
 EVASION_AUGMENT_FRACTION = 0.10
+
+LEET = str.maketrans("aeiost", "431057")
+
+# Hand-authored samples are assigned to a split by the hash of their text, so a
+# sample can only ever be in one split: bucket = sha256(text) % 100.
+HAND_AUTHORED_BUCKETS = {"train": range(0, 80), "validation": range(80, 90), "test": range(90, 100)}
 
 
 def sha256_file(path: Path) -> str:
@@ -321,82 +353,102 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def download_source() -> tuple[pd.DataFrame, Path]:
-    """Fetch the pinned source file from the Hub (cached after the first call)."""
-    try:
-        from huggingface_hub import hf_hub_download
+def _text_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
-        path = Path(
-            hf_hub_download(DATASET_NAME, DATASET_FILE, repo_type="dataset", revision=DATASET_REVISION)
-        )
+
+def hand_authored_split(text: str) -> str:
+    bucket = int(_text_hash(text), 16) % 100
+    return next(split for split, buckets in HAND_AUTHORED_BUCKETS.items() if bucket in buckets)
+
+
+def load_official_splits(train_config: str = DEFAULT_TRAIN_CONFIG) -> dict[str, pd.DataFrame]:
+    """The Hub's own train/validation/test splits at the pinned revision (no re-split)."""
+    if train_config not in TRAIN_CONFIGS:
+        raise ValueError(f"train_config must be one of {TRAIN_CONFIGS}, got {train_config!r}")
+    try:
+        from datasets import load_dataset
+
+        dataset = load_dataset(DATASET_NAME, train_config, revision=DATASET_REVISION)
     except Exception as exc:
         raise RuntimeError(
-            f"Could not download {DATASET_NAME}@{DATASET_REVISION[:7]} ({DATASET_FILE}) from the "
-            f"Hugging Face Hub: {exc}. Check the internet connection; the file is cached after one success."
+            f"Could not load {DATASET_NAME} ({train_config}) @ {DATASET_REVISION[:7]}: {exc}. "
+            "Check the internet connection; the download is cached after one success."
         ) from exc
-    return pd.read_parquet(path), path
+    frames = {split: dataset[split].to_pandas() for split in SPLITS}
+    mismatches = {
+        split: (len(frames[split]), EXPECTED_SOURCE_ROWS[(train_config, split)])
+        for split in SPLITS
+        if len(frames[split]) != EXPECTED_SOURCE_ROWS[(train_config, split)]
+    }
+    if mismatches:
+        raise RuntimeError(
+            f"Split sizes differ from the dataset card for {train_config} @ {DATASET_REVISION[:7]} "
+            f"(got, expected): {mismatches}. Refusing to build a dataset that does not match the card."
+        )
+    return frames
 
 
-def build_dataset(random_state: int = BUILD_SEED, source_df: pd.DataFrame | None = None) -> pd.DataFrame:
-    # There is deliberately no offline toy fallback: it used to train silently on 16 rows.
-    if source_df is None:
-        source_df, _ = download_source()
-    text_col, label_col = _resolve_text_and_label_columns(source_df)
-    df = source_df[[text_col, label_col]].copy()
-    df.rename(columns={text_col: "text", label_col: "original_label"}, inplace=True)
-    df["category"] = source_df["category"].astype(str) if "category" in source_df else "unknown"
-    df["text"] = df["text"].astype(str).str.strip()
+def build_split(source: pd.DataFrame, split: str) -> pd.DataFrame:
+    """Original rows of one official split plus rows derived from that split only.
+
+    derivation: "original" (Hub row), "synthetic_suspicious" (SAFE row + manipulation
+    phrase, label SUSPICIOUS - synthetic), "leet" (MALICIOUS row in leetspeak),
+    "human_suspicious" / "hard_negative" (hand-authored, assigned by text hash).
+    Derived rows keep the group_id of their source row.
+    """
+    rng = np.random.default_rng(BUILD_SEED + SPLITS.index(split))
+    df = pd.DataFrame(
+        {
+            "text": source["text"].astype(str).str.strip(),
+            "label": source["label"].map(_binary_to_str),
+            "hub_label": source["label"].astype(int),
+            "derivation": "original",
+            "category": source["category"].astype(str),
+            "source": source["source"].astype(str),
+            "group_id": source["group_id"].astype(str),
+        }
+    )
     df = df[df["text"] != ""].reset_index(drop=True)
-    df["label"] = df["original_label"].map(_binary_to_str)
 
-    safe_mask = df["label"] == "SAFE"
-    safe_df = df[safe_mask].copy()
-    suspicious_n = max(1, int(len(safe_df) * SUSPICIOUS_FRACTION_OF_SAFE))
-    rng = np.random.default_rng(random_state)
-    suspicious_idx = rng.choice(safe_df.index.to_numpy(), size=suspicious_n, replace=False)
+    safe = df[df["label"] == "SAFE"]
+    picked = rng.choice(safe.index.to_numpy(), size=max(1, int(len(safe) * SUSPICIOUS_FRACTION_OF_SAFE)), replace=False)
+    suspicious = safe.loc[picked].copy()
+    suspicious["text"] = suspicious["text"].map(lambda t: _inject_subtle_phrase(t, rng))
+    suspicious["label"] = "SUSPICIOUS"  # synthetic class
+    suspicious["derivation"] = "synthetic_suspicious"
+    suspicious["category"] = "synthetic_suspicious"
 
-    suspicious_df = safe_df.loc[suspicious_idx].copy()
-    suspicious_df["text"] = suspicious_df["text"].map(lambda t: _inject_subtle_phrase(t, rng))
-    suspicious_df["label"] = "SUSPICIOUS"
-    suspicious_df["category"] = "synthetic_suspicious"
-
-    final_df = pd.concat([df, suspicious_df], ignore_index=True)
-
-    # Merge hand-authored SUSPICIOUS samples (empirically grounded, not procedural)
-    human_suspicious_df = pd.DataFrame(
-        [
-            {"text": s, "label": "SUSPICIOUS", "original_label": "human_authored", "category": "human_suspicious"}
-            for s in HUMAN_SUSPICIOUS_SAMPLES
-        ]
-    )
-    final_df = pd.concat([final_df, human_suspicious_df], ignore_index=True)
-
-    benign_hard_df = pd.DataFrame(
-        [
-            {"text": s, "label": "SAFE", "original_label": "benign_hard_negative", "category": "benign_hard_negative"}
-            for s in BENIGN_HARD_NEGATIVES
-        ]
-    )
-    final_df = pd.concat([final_df, benign_hard_df], ignore_index=True)
-
-    final_df = augment_with_evasions(final_df)
-
-    final_df = final_df[["text", "label", "original_label", "category"]].sample(
-        frac=1.0, random_state=random_state
-    )
-    final_df.reset_index(drop=True, inplace=True)
-    return final_df
-
-
-def augment_with_evasions(df: pd.DataFrame) -> pd.DataFrame:
-    LEET = str.maketrans("aeiost", "431057")
     malicious = df[df["label"] == "MALICIOUS"]
-    sample = malicious.sample(frac=EVASION_AUGMENT_FRACTION, random_state=42)
-    variants = sample.copy()
-    variants["text"] = variants["text"].map(lambda t: t.translate(LEET))
-    variants["original_label"] = "leet_augmented"
-    variants["category"] = "leet_obfuscation"
-    return pd.concat([df, variants], ignore_index=True)
+    leet = malicious.sample(frac=EVASION_AUGMENT_FRACTION, random_state=BUILD_SEED + SPLITS.index(split)).copy()
+    leet["text"] = leet["text"].map(lambda t: t.translate(LEET))
+    leet["derivation"] = "leet"
+    leet["category"] = "leet_obfuscation"
+
+    hand_rows = [
+        {"text": t, "label": "SUSPICIOUS", "derivation": "human_suspicious", "category": "human_suspicious"}
+        for t in HUMAN_SUSPICIOUS_SAMPLES
+        if hand_authored_split(t) == split
+    ] + [
+        {"text": t, "label": "SAFE", "derivation": "hard_negative", "category": "benign_hard_negative"}
+        for t in BENIGN_HARD_NEGATIVES
+        if hand_authored_split(t) == split
+    ]
+    hand = pd.DataFrame(hand_rows)
+    if not hand.empty:
+        hand["source"] = "promptguard_hand_authored"
+        hand["group_id"] = hand["text"].map(lambda t: "hand_" + _text_hash(t)[:12])
+
+    derived = pd.concat([suspicious, leet, hand], ignore_index=True)
+    derived["hub_label"] = pd.NA  # derived rows have no Hub label; binary metrics use originals only
+    out = pd.concat([df, derived], ignore_index=True)
+    out = out.sample(frac=1.0, random_state=BUILD_SEED).reset_index(drop=True)
+    return out[["text", "label", "hub_label", "derivation", "category", "source", "group_id"]]
+
+
+def build_dataset(train_config: str = DEFAULT_TRAIN_CONFIG, sources: dict | None = None) -> dict[str, pd.DataFrame]:
+    sources = sources if sources is not None else load_official_splits(train_config)
+    return {split: build_split(sources[split], split) for split in SPLITS}
 
 
 def _display_path(path: Path) -> str:
@@ -412,59 +464,74 @@ def read_meta() -> dict:
     return json.loads(META_PATH.read_text(encoding="utf-8"))
 
 
-def dataset_provenance(train_df: pd.DataFrame, test_df: pd.DataFrame, *, split_seed: int, test_size: float) -> dict:
-    """What every metrics file records: source dataset, processed-data hash, split."""
-    meta = read_meta()
+def dataset_provenance(meta: dict | None = None) -> dict:
+    """What every metrics/output file records about the data it was computed on."""
+    meta = meta or read_meta()
     return {
-        "source": meta["source"],
-        "processed_sha256": meta["processed"]["sha256"],
-        "processed_rows": meta["processed"]["rows"],
-        "build_seed": meta["processed"]["build_seed"],
-        "split": {
-            "seed": split_seed,
-            "test_size": test_size,
-            "train_rows": int(len(train_df)),
-            "test_rows": int(len(test_df)),
-            "train_label_counts": {str(k): int(v) for k, v in train_df["label"].value_counts().items()},
-            "test_label_counts": {str(k): int(v) for k, v in test_df["label"].value_counts().items()},
+        "name": meta["dataset"]["name"],
+        "revision": meta["dataset"]["revision"],
+        "train_config": meta["dataset"]["train_config"],
+        "eval_splits": "official validation/test (identical in core and full)",
+        "license": meta["dataset"]["license"],
+        "source_rows": meta["dataset"]["source_rows"],
+        "processed": {
+            split: {"rows": info["rows"], "sha256": info["sha256"], "label_counts": info["label_counts"]}
+            for split, info in meta["processed"].items()
         },
+        "synthetic_note": meta["synthetic_note"],
     }
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Build data/{train,validation,test}.csv from the pinned Hub dataset.")
+    parser.add_argument("--train-config", choices=TRAIN_CONFIGS, default=DEFAULT_TRAIN_CONFIG,
+                        help="Hub config whose train split is used (default: full). Validation/test are shared.")
+    args = parser.parse_args(argv)
+
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    source_df, source_path = download_source()
-    final_df = build_dataset(BUILD_SEED, source_df=source_df)
-    # Fixed line endings keep the CSV (and its sha256) identical across OSes.
-    final_df.to_csv(PROCESSED_PATH, index=False, lineterminator="\n")
+    sources = load_official_splits(args.train_config)
+    built = build_dataset(args.train_config, sources)
+    processed = {}
+    for split, frame in built.items():
+        path = SPLIT_PATHS[split]
+        # Fixed line endings keep the CSVs (and their sha256) identical across OSes.
+        frame.to_csv(path, index=False, lineterminator="\n")
+        processed[split] = {
+            "path": _display_path(path),
+            "sha256": sha256_file(path),
+            "rows": int(len(frame)),
+            "label_counts": {str(k): int(v) for k, v in frame["label"].value_counts().items()},
+            "derivation_counts": {str(k): int(v) for k, v in frame["derivation"].value_counts().items()},
+        }
     meta = {
-        "source": {
+        "dataset": {
             "name": DATASET_NAME,
-            "config": DATASET_CONFIG,
-            "split": DATASET_SPLIT,
-            "file": DATASET_FILE,
             "revision": DATASET_REVISION,
-            "sha256": sha256_file(source_path),
-            "rows": int(len(source_df)),
+            "train_config": args.train_config,
+            "source_rows": {split: int(len(sources[split])) for split in SPLITS},
+            "license": LICENSE_INFO,
         },
-        "processed": {
-            "path": _display_path(PROCESSED_PATH),
-            "sha256": sha256_file(PROCESSED_PATH),
-            "rows": int(len(final_df)),
-            "label_counts": {str(k): int(v) for k, v in final_df["label"].value_counts().items()},
-            "build_seed": BUILD_SEED,
+        "processed": processed,
+        "build": {
+            "seed": BUILD_SEED,
             "suspicious_fraction_of_safe": SUSPICIOUS_FRACTION_OF_SAFE,
             "evasion_augment_fraction": EVASION_AUGMENT_FRACTION,
+            "hand_authored_split_rule": "sha256(text) % 100: 0-79 train, 80-89 validation, 90-99 test",
+            "derived_after_split": True,
         },
+        "synthetic_note": SYNTHETIC_NOTE,
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     META_PATH.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
-    print(f"Source: {DATASET_NAME} [{DATASET_CONFIG}/{DATASET_SPLIT}] @ {DATASET_REVISION[:7]} ({len(source_df)} rows)")
-    print(f"Saved dataset: {PROCESSED_PATH} ({len(final_df)} rows, sha256 {meta['processed']['sha256'][:12]})")
-    print(f"Saved metadata: {META_PATH}")
-    print("Class distribution:")
-    print(final_df["label"].value_counts())
+    print(f"Source: {DATASET_NAME} @ {DATASET_REVISION[:7]}, train config '{args.train_config}'")
+    for split in SPLITS:
+        info = processed[split]
+        print(
+            f"  {split:<10} hub rows={len(sources[split]):>6}  processed rows={info['rows']:>6}  "
+            f"labels={info['label_counts']}  derivations={info['derivation_counts']}"
+        )
+    print(f"Saved {', '.join(p['path'] for p in processed.values())} and {_display_path(META_PATH)}")
 
 
 if __name__ == "__main__":

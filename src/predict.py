@@ -118,6 +118,23 @@ class PromptAnalyzer:
         else:
             self.guard_tokenizer, self.guard_model, self.source = _load_transformer("guard", self.device)
 
+    def predict_proba(self, texts: list[str]) -> np.ndarray:
+        """(n, 3) class probabilities in LABELS order for already-normalized texts."""
+        texts = list(texts)
+        if self.model_type == "classical":
+            probs = np.asarray(self.classical_model.predict_proba(texts), dtype=float)
+            classes = [str(c) for c in self.classical_model.classes_]
+            return probs[:, [classes.index(label) for label in LABELS]]
+        model, tokenizer = (
+            (self.bert_model, self.bert_tokenizer) if self.model_type == "bert" else (self.guard_model, self.guard_tokenizer)
+        )
+        encoded = tokenizer(texts, truncation=True, max_length=MAX_LENGTH, padding=True, return_tensors="pt")
+        encoded = {k: v.to(self.device) for k, v in encoded.items()}
+        with torch.no_grad():
+            probs = torch.softmax(model(**encoded).logits.float(), dim=-1).cpu().numpy()
+        names = [str(model.config.id2label[i]) for i in range(probs.shape[1])]
+        return probs[:, [names.index(label) for label in LABELS]]
+
     def _predict_classical(self, text: str) -> tuple[str, float]:
         if self.classical_model is None:
             raise ValueError("Classical model is not loaded.")

@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import base64
 import codecs
-import json
 import re
-from pathlib import Path
 
 import pandas as pd
 
@@ -138,78 +136,36 @@ def get_risk_phrases(text: str) -> list[dict[str, str | int]]:
     return spans
 
 
-# The train/test split is fixed for every model and every training seed, so seeds
-# vary model randomness only and the test set never leaks into training.
-SPLIT_SEED = 42
-TEST_SIZE = 0.2
+def load_split(split: str) -> pd.DataFrame:
+    """One official split (train / validation / test) built by src.load_data.
 
+    Refuses a CSV whose sha256 differs from data/dataset_meta.json. Text is
+    normalized with clean_text, as the API does before predicting.
+    """
+    from src.load_data import SPLIT_PATHS, read_meta, sha256_file
 
-def load_processed_dataset() -> pd.DataFrame:
-    from src.load_data import PROCESSED_PATH, read_meta, sha256_file
-
-    if not PROCESSED_PATH.exists():
-        raise FileNotFoundError(f"Dataset not found at {PROCESSED_PATH}. Run `python -m src.load_data` first.")
-    expected = read_meta()["processed"]["sha256"]
-    if sha256_file(PROCESSED_PATH) != expected:
+    path = SPLIT_PATHS[split]
+    if not path.exists():
+        raise FileNotFoundError(f"Dataset split not found at {path}. Run `python -m src.load_data` first.")
+    expected = read_meta()["processed"][split]["sha256"]
+    if sha256_file(path) != expected:
         raise ValueError(
-            f"{PROCESSED_PATH} does not match the sha256 in dataset_meta.json (edited or stale). "
+            f"{path} does not match the sha256 in dataset_meta.json (edited or stale). "
             "Rerun `python -m src.load_data`."
         )
-    df = pd.read_csv(PROCESSED_PATH)
-    if "text" not in df.columns or "label" not in df.columns:
-        raise ValueError("processed_dataset.csv must contain 'text' and 'label' columns.")
-    df["text"] = df["text"].map(clean_text)
+    df = pd.read_csv(path, keep_default_na=False, na_values={"hub_label": [""]})
+    df["text"] = df["text"].astype(str).map(clean_text)
     return df
 
 
-def get_splits_with_provenance() -> tuple[pd.DataFrame, pd.DataFrame, dict]:
-    """The canonical split plus the provenance dict to store in metrics files."""
+def get_splits() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
+    """(train, validation, test, provenance): the official splits plus what every
+    metrics file records about them. Nothing is re-split."""
     from src.load_data import dataset_provenance
 
-    train_df, test_df = get_train_test_data()
-    return train_df, test_df, dataset_provenance(train_df, test_df, split_seed=SPLIT_SEED, test_size=TEST_SIZE)
+    return load_split("train"), load_split("validation"), load_split("test"), dataset_provenance()
 
 
-def get_train_test_data(
-    test_size: float = TEST_SIZE, random_state: int = SPLIT_SEED
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    df = load_processed_dataset()
-    train_parts: list[pd.DataFrame] = []
-    test_parts: list[pd.DataFrame] = []
-    skipped_labels: list[str] = []
-    for label, group in df.groupby("label", sort=False):
-        if len(group) < 2:
-            skipped_labels.append(str(label))
-            train_parts.append(group)
-            continue
-        shuffled = group.sample(frac=1.0, random_state=random_state)
-        split_idx = min(max(int(len(shuffled) * (1.0 - test_size)), 1), len(shuffled) - 1)
-        train_parts.append(shuffled.iloc[:split_idx])
-        test_parts.append(shuffled.iloc[split_idx:])
-
-    if skipped_labels:
-        print(
-            f"[get_train_test_data] WARNING: {skipped_labels} had <2 samples — "
-            "placed entirely in train. These classes will show 0 support in test metrics."
-        )
-
-    train_df = pd.concat(train_parts).sample(frac=1.0, random_state=random_state)
-    test_df = (
-        pd.concat(test_parts).sample(frac=1.0, random_state=random_state)
-        if test_parts
-        else pd.DataFrame(columns=df.columns)
-    )
-
-    root = Path(__file__).resolve().parents[1]
-    artifacts_dir = root / "artifacts"
-    artifacts_dir.mkdir(parents=True, exist_ok=True)
-    split_path = artifacts_dir / "split_indices.json"
-    split_payload = {
-        "train_indices": train_df.index.tolist(),
-        "test_indices": test_df.index.tolist(),
-        "skipped_labels": skipped_labels,
-    }
-    with open(split_path, "w", encoding="utf-8") as f:
-        json.dump(split_payload, f, indent=2)
-
-    return train_df.reset_index(drop=True), test_df.reset_index(drop=True)
+def get_train_test_data() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(train, test) official splits; kept for older callers."""
+    return load_split("train"), load_split("test")

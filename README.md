@@ -70,19 +70,34 @@ Input Prompt -------->| preprocess.py       |
 
 ## Dataset
 
-- Source: HuggingFace `neuralchemy/Prompt-injection-dataset`, config `core`, split `train`,
-  pinned to revision `7d70432` (`DATASET_REVISION` in `src/load_data.py`)
-- `python -m src.load_data` is the only producer of the data. It writes
-  `data/processed_dataset.csv` and `data/dataset_meta.json` (source revision and sha256,
-  build parameters, sha256 of the CSV). Training and evaluation refuse a CSV whose hash
-  doesn't match, and every metrics file records the dataset revision, hashes and split sizes.
-- Fixed 80/20 stratified split (seed 42) for every model and every training seed
-- Base labels mapped to: `SAFE`, `MALICIOUS`
-- Synthetic middle class created: `SUSPICIOUS` (~35% of SAFE prompts modified with subtle manipulation phrases)
-- Hand-authored suspicious samples covering roleplay setups, authority impersonation, context-switching attacks
-- Benign hard negatives to reduce false positives
-- Output files: `data/processed_dataset.csv`, `data/dataset_meta.json`
-- Columns: `text`, `label`, `original_label`, `category` (source attack category, or how a synthetic row was made)
+- **Source:** [`neuralchemy/Prompt-injection-dataset`](https://huggingface.co/datasets/neuralchemy/Prompt-injection-dataset),
+  loaded with `datasets.load_dataset` at the pinned revision `7d70432` (`DATASET_REVISION` in `src/load_data.py`).
+- **Official splits, no re-splitting:**
+  - train: the `full` config's train split (14,036 rows, includes the card's own augmented variants);
+    `python -m src.load_data --train-config core` uses the 4,391-row un-augmented train split instead
+  - validation: official validation split (941 rows), used for model selection
+  - test: official test split (942 rows), used for every reported metric
+
+  Validation and test are identical in both configs. `load_data` fails if the Hub split sizes differ
+  from the dataset card.
+- **Labels:** the Hub dataset is binary (1 = malicious, 0 = benign), mapped to `SAFE` / `MALICIOUS`.
+- **SUSPICIOUS is synthetic.** PromptGuard derives it after the split and only within the same split:
+  ~35% of each split's SAFE rows get an appended manipulation phrase, plus hand-authored samples assigned
+  to exactly one split by text hash. Leetspeak variants (10% of MALICIOUS rows) and benign hard negatives
+  are derived the same way. Each row records its `derivation`
+  (`original`, `synthetic_suspicious`, `leet`, `human_suspicious`, `hard_negative`).
+- **Two views in every metrics file:**
+  - **binary** SAFE vs MALICIOUS on the original Hub test rows with Hub labels. This is the headline
+    for comparison with other work.
+  - **3-class** on all test rows, including the synthetic SUSPICIOUS class. The appended-phrase SUSPICIOUS
+    rows are easy to detect, so treat 3-class SUSPICIOUS scores with caution.
+- **Reproducibility:** `python -m src.load_data` writes `data/{train,validation,test}.csv` and
+  `data/dataset_meta.json` (revision, config, split sizes, sha256 per file, license). Readers refuse a CSV
+  whose hash doesn't match, and every metrics/output file records the dataset name, revision, config,
+  split sizes and license.
+- **License:** the card declares Apache-2.0, but its source table lists WildGuard / JudgeComparison
+  (`source = wildguard_judgecomp`) as "Research" and HackAPrompt as CC BY 4.0. Check those terms before
+  any commercial use or redistribution.
 
 ---
 

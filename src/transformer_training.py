@@ -18,8 +18,8 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
-from src.metrics import LABELS, summarize_predictions
-from src.preprocess import clean_text, get_splits_with_provenance
+from src.metrics import LABELS, evaluate_split
+from src.preprocess import clean_text, get_splits
 from src.sanity_prompts import TEST_PROMPTS
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -156,23 +156,29 @@ def _cap_rows(df: pd.DataFrame, n: int, seed: int) -> pd.DataFrame:
     return pd.concat(parts).sample(frac=1.0, random_state=seed).reset_index(drop=True)
 
 
-def _load_splits(args: argparse.Namespace) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
-    # The split is the fixed canonical one; --seed only seeds the model and shuffling.
+def _load_splits(args: argparse.Namespace) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
+    """Official train / validation / test splits; --seed never changes them."""
     try:
-        train_df, test_df, provenance = get_splits_with_provenance()
+        train_df, val_df, test_df, provenance = get_splits()
     except (FileNotFoundError, ValueError) as exc:
         raise TrainingError(str(exc)) from exc
-    for df in (train_df, test_df):
+    for df in (train_df, val_df, test_df):
         unknown = set(df["label"]) - set(LABELS)
         if unknown:
             raise TrainingError(f"Unknown labels in dataset: {sorted(unknown)}")
     if args.max_samples:
         train_df = _cap_rows(train_df, args.max_samples, args.seed)
+        val_df = _cap_rows(val_df, args.max_samples, args.seed)
         test_df = _cap_rows(test_df, args.max_samples, args.seed)
-        provenance["smoke_cap"] = {"max_samples": args.max_samples, "train_rows": len(train_df), "test_rows": len(test_df)}
-    if test_df.empty:
-        raise TrainingError("Test split is empty; cannot evaluate.")
-    return train_df, test_df, provenance
+        provenance["smoke_cap"] = {
+            "max_samples": args.max_samples,
+            "train_rows": len(train_df),
+            "validation_rows": len(val_df),
+            "test_rows": len(test_df),
+        }
+    if test_df.empty or val_df.empty:
+        raise TrainingError("Validation or test split is empty; cannot evaluate.")
+    return train_df, val_df, test_df, provenance
 
 
 def _encode(tokenizer, df: pd.DataFrame, max_length: int) -> list[dict]:
@@ -307,11 +313,11 @@ def train_model(spec: ModelSpec, args: argparse.Namespace, shared_outputs: bool 
     transformers.set_seed(args.seed)
     cuda = torch.cuda.is_available()
     device = torch.cuda.get_device_name(0) if cuda else "CPU"
-    train_df, test_df, provenance = _load_splits(args)
+    train_df, val_df, test_df, provenance = _load_splits(args)
     print(
         f"[{spec.name}] base={spec.base_model} device={device} torch={torch.__version__} "
         f"transformers={transformers.__version__}\n"
-        f"[{spec.name}] train={len(train_df)} test={len(test_df)} epochs={args.epochs} "
+        f"[{spec.name}] train={len(train_df)} validation={len(val_df)} test={len(test_df)} epochs={args.epochs} "
         f"batch={args.batch_size} lr={args.learning_rate} seed={args.seed}"
         + (f"  SMOKE TEST (--max-samples {args.max_samples})" if smoke else "")
     )
@@ -319,7 +325,8 @@ def train_model(spec: ModelSpec, args: argparse.Namespace, shared_outputs: bool 
 
     tokenizer, model = _load_base_model(spec, transformers)
     train_items = _encode(tokenizer, train_df, args.max_length)
-    eval_items = _encode(tokenizer, test_df, args.max_length)
+    # Checkpoint selection uses the official validation split; test is only for the final report.
+    eval_items = _encode(tokenizer, val_df, args.max_length)
 
     def compute_metrics(eval_pred) -> dict[str, float]:
         logits, labels = eval_pred
@@ -371,13 +378,12 @@ def train_model(spec: ModelSpec, args: argparse.Namespace, shared_outputs: bool 
         raise
     train_seconds = time.monotonic() - started
 
-    y_true = test_df["label"].tolist()
-    y_pred = [LABELS[i] for i in probs.argmax(axis=1)]
-    metrics = summarize_predictions(y_true, y_pred, probs.max(axis=1).tolist())
+    test_metrics = evaluate_split(test_df, probs)
+    metrics = test_metrics["three_class"]
     sanity = run_sanity_check(torch, model, tokenizer, args.max_length)
 
     report = {
-        **metrics,
+        "test": test_metrics,
         "model": spec.name,
         "base_model": spec.base_model,
         **spec.metadata,
@@ -398,7 +404,9 @@ def train_model(spec: ModelSpec, args: argparse.Namespace, shared_outputs: bool 
     }
     print(
         f"\n[{spec.name}] accuracy={metrics['accuracy']:.4f} f1_weighted={metrics['f1_weighted']:.4f} "
-        f"ece={metrics['ece']:.4f} per_class_f1={ {k: round(v, 3) for k, v in metrics['per_class_f1'].items()} }"
+        f"ece={metrics['ece']:.4f} per_class_f1={ {k: round(v, 3) for k, v in metrics['per_class_f1'].items()} }\n"
+        f"[{spec.name}] binary (original Hub rows): accuracy={test_metrics['binary']['accuracy']:.4f} "
+        f"f1={test_metrics['binary']['f1']:.4f} fpr={test_metrics['binary']['false_positive_rate']}"
     )
 
     artifact_metrics_path = (

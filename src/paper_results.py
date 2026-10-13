@@ -39,8 +39,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from src.metrics import LABELS, summarize_predictions
-from src.preprocess import clean_text, get_splits_with_provenance
+from src.metrics import LABELS, evaluate_split, labels_from_probs
+from src.preprocess import clean_text, get_splits
 from src.robustness import ADVERSARIAL_PROMPTS
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -90,14 +90,18 @@ class ClassicalPredictor:
         self.pipeline = pipeline
         self.classes = [str(c) for c in pipeline.classes_]
 
-    def predict(self, texts: list[str]) -> tuple[list[str], list[float]]:
-        probs = self.pipeline.predict_proba(texts)
-        idx = probs.argmax(axis=1)
-        return [self.classes[i] for i in idx], probs.max(axis=1).astype(float).tolist()
+    def predict(self, texts: list[str]) -> np.ndarray:
+        """(n, 3) probabilities in LABELS order."""
+        probs = np.asarray(self.pipeline.predict_proba(texts), dtype=float)
+        return probs[:, [self.classes.index(label) for label in LABELS]]
 
 
 class TransformerPredictor:
-    """Any sequence classifier on CPU; label names are mapped onto LABELS."""
+    """Any sequence classifier on CPU; its label names are mapped onto LABELS.
+
+    A 2-class model (the ProtectAI baseline) fills only the SAFE and MALICIOUS
+    columns, so it can never predict the synthetic SUSPICIOUS class.
+    """
 
     def __init__(self, source: str, max_length: int = 256, batch_size: int = 32):
         import torch
@@ -109,7 +113,9 @@ class TransformerPredictor:
         self.model = AutoModelForSequenceClassification.from_pretrained(source).to("cpu").eval()
         self.max_length = max_length
         self.batch_size = batch_size
-        self.labels = [self._map_label(self.model.config.id2label[i]) for i in range(self.model.config.num_labels)]
+        self.columns = [
+            LABELS.index(self._map_label(self.model.config.id2label[i])) for i in range(self.model.config.num_labels)
+        ]
 
     @staticmethod
     def _map_label(name: str) -> str:
@@ -122,9 +128,8 @@ class TransformerPredictor:
             return "SAFE"
         raise ValueError(f"Cannot map model label {name!r} onto {LABELS}")
 
-    def predict(self, texts: list[str]) -> tuple[list[str], list[float]]:
-        labels: list[str] = []
-        confs: list[float] = []
+    def predict(self, texts: list[str]) -> np.ndarray:
+        out = np.zeros((len(texts), len(LABELS)))
         with self.torch.no_grad():
             for start in range(0, len(texts), self.batch_size):
                 batch = self.tokenizer(
@@ -135,9 +140,9 @@ class TransformerPredictor:
                     return_tensors="pt",
                 )
                 probs = self.torch.softmax(self.model(**batch).logits.float(), dim=-1).numpy()
-                labels += [self.labels[i] for i in probs.argmax(axis=1)]
-                confs += probs.max(axis=1).astype(float).tolist()
-        return labels, confs
+                for model_col, label_col in enumerate(self.columns):
+                    out[start : start + len(probs), label_col] += probs[:, model_col]
+        return out
 
 
 # --------------------------------------------------------------------------- evaluation
@@ -152,24 +157,20 @@ def _category_frame(test_df: pd.DataFrame) -> pd.Series:
 
 
 def evaluate_predictor(predictor, test_df: pd.DataFrame, categories: pd.Series) -> dict:
-    y_true = test_df["label"].tolist()
-    y_pred, confs = predictor.predict(test_df["text"].tolist())
-    from sklearn.metrics import accuracy_score, f1_score
+    probs = predictor.predict(test_df["text"].tolist())
+    result = evaluate_split(test_df, probs)  # {"three_class": ..., "binary": ...}
+    y_pred = labels_from_probs(probs)
 
-    result = summarize_predictions(y_true, y_pred, confs)
-    true_bin = [to_binary(label) for label in y_true]
-    pred_bin = [to_binary(label) for label in y_pred]
-    result["binary_accuracy"] = float(accuracy_score(true_bin, pred_bin))
-    result["binary_f1"] = float(f1_score(true_bin, pred_bin, pos_label="ATTACK", zero_division=0))
-
-    correct = pd.Series([t == p for t, p in zip(true_bin, pred_bin)], index=test_df.index)
+    correct = pd.Series(
+        [to_binary(t) == to_binary(p) for t, p in zip(test_df["label"], y_pred)], index=test_df.index
+    )
     result["dataset_categories"] = {
         str(cat): {"n": int(mask.sum()), "detection_accuracy": float(correct[mask].mean())}
         for cat, mask in ((c, categories == c) for c in sorted(categories.unique()))
     }
 
     adv_texts = [clean_text(item["text"]) for item in ADVERSARIAL_PROMPTS]  # same normalization as the API
-    adv_pred, _ = predictor.predict(adv_texts)
+    adv_pred = labels_from_probs(predictor.predict(adv_texts))
     adversarial: dict[str, dict] = {}
     for item, pred in zip(ADVERSARIAL_PROMPTS, adv_pred):
         entry = adversarial.setdefault(item["category"], {"n": 0, "binary_correct": 0, "exact_correct": 0})
@@ -275,15 +276,21 @@ def run_protectai(test_df, categories, latency_texts) -> dict:
     }
 
 
+THREE_CLASS_METRICS = ("accuracy", "f1_weighted", "precision_weighted", "recall_weighted", "ece")
+BINARY_METRICS = ("accuracy", "precision", "recall", "f1", "false_positive_rate", "ece")
+
+
 def aggregate(model_result: dict) -> dict:
     ok = [r for r in model_result["runs"] if r["status"] == "ok"]
     summary: dict = {
         "n_seeds_ok": len(ok),
         "n_seeds_failed": len(model_result["runs"]) - len(ok),
+        "three_class": {m: summarize_values([r["three_class"][m] for r in ok]) for m in THREE_CLASS_METRICS},
+        "binary": {m: summarize_values([r["binary"][m] for r in ok]) for m in BINARY_METRICS},
     }
-    for metric in ("accuracy", "f1_weighted", "precision_weighted", "recall_weighted", "ece", "binary_accuracy", "binary_f1"):
-        summary[metric] = summarize_values([r[metric] for r in ok])
-    summary["per_class_f1"] = {label: summarize_values([r["per_class_f1"][label] for r in ok]) for label in LABELS}
+    summary["three_class"]["per_class_f1"] = {
+        label: summarize_values([r["three_class"]["per_class_f1"][label] for r in ok]) for label in LABELS
+    }
     for key in ("adversarial_categories", "dataset_categories"):
         cats = sorted({c for r in ok for c in r[key]})
         summary[key] = {
@@ -342,33 +349,42 @@ def build_tables(results: dict) -> dict[str, tuple[list[str], list[list[str]], s
     lat = {m: results["models"][m].get("latency") for m in models}
     seeds_note = "mean ± std [95% t-CI] over seeds; '-' std when one seed"
     tables = {}
-    tables["main_results"] = (
-        ["model", "seeds", "accuracy", "weighted F1", "ECE", "CPU latency (ms)"],
+    tables["binary_headline"] = (
+        ["model", "seeds", "accuracy", "F1 (MALICIOUS)", "false-positive rate", "ECE", "CPU latency (ms)"],
         [
             [
                 DISPLAY_NAMES[m],
                 str(summ[m]["n_seeds_ok"]),
-                fmt_stat(summ[m]["accuracy"]),
-                fmt_stat(summ[m]["f1_weighted"]),
-                fmt_stat(summ[m]["ece"]),
+                fmt_stat(summ[m]["binary"]["accuracy"]),
+                fmt_stat(summ[m]["binary"]["f1"]),
+                fmt_stat(summ[m]["binary"]["false_positive_rate"]),
+                fmt_stat(summ[m]["binary"]["ece"]),
                 f"{lat[m]['mean_ms']:.2f}" if lat[m] else "-",
             ]
             for m in models
         ],
-        f"Held-out test set, 3 classes; {seeds_note}. Latency: mean single-prompt CPU inference.",
+        "SAFE vs MALICIOUS on the original Hub test rows (official test split, Hub labels; prediction = MALICIOUS "
+        f"unless the model says SAFE). Headline metric; {seeds_note}. Latency: mean single-prompt CPU inference.",
+    )
+    tables["three_class"] = (
+        ["model", "seeds", "accuracy", "weighted F1", "ECE"],
+        [
+            [
+                DISPLAY_NAMES[m],
+                str(summ[m]["n_seeds_ok"]),
+                fmt_stat(summ[m]["three_class"]["accuracy"]),
+                fmt_stat(summ[m]["three_class"]["f1_weighted"]),
+                fmt_stat(summ[m]["three_class"]["ece"]),
+            ]
+            for m in models
+        ],
+        "3-class (SAFE / SUSPICIOUS / MALICIOUS) on all test rows. SUSPICIOUS is synthetic (derived within the "
+        f"test split); the 2-class baseline cannot predict it. {seeds_note}.",
     )
     tables["per_class_f1"] = (
         ["model"] + [f"F1 {label}" for label in LABELS],
-        [[DISPLAY_NAMES[m]] + [fmt_stat(summ[m]["per_class_f1"][label]) for label in LABELS] for m in models],
-        f"Per-class F1 on the held-out test set; {seeds_note}.",
-    )
-    tables["binary_detection"] = (
-        ["model", "seeds", "SAFE-vs-attack accuracy", "attack F1"],
-        [
-            [DISPLAY_NAMES[m], str(summ[m]["n_seeds_ok"]), fmt_stat(summ[m]["binary_accuracy"]), fmt_stat(summ[m]["binary_f1"])]
-            for m in models
-        ],
-        "Binary detection (attack = SUSPICIOUS or MALICIOUS); the only fair comparison for the 2-class baseline.",
+        [[DISPLAY_NAMES[m]] + [fmt_stat(summ[m]["three_class"]["per_class_f1"][label]) for label in LABELS] for m in models],
+        f"Per-class F1 on the test split (SUSPICIOUS is synthetic); {seeds_note}.",
     )
     for key, name, caption in (
         ("adversarial_categories", "robustness_by_category",
@@ -437,7 +453,7 @@ def main(argv: list[str] | None = None) -> dict:
     parser.add_argument("--protectai", action="store_true", help=f"Also evaluate {PROTECTAI_ID}.")
     args = parser.parse_args(argv)
 
-    _, test_df, provenance = get_splits_with_provenance()
+    _, _, test_df, provenance = get_splits()
     categories = _category_frame(test_df)
     latency_texts = test_df["text"].sample(n=min(args.latency_samples, len(test_df)), random_state=0).tolist()
 
@@ -490,7 +506,7 @@ def main(argv: list[str] | None = None) -> dict:
 
 
 def build_tables_text(results: dict) -> str:
-    columns, rows, caption = build_tables(results)["main_results"]
+    columns, rows, caption = build_tables(results)["binary_headline"]
     return caption + "\n" + to_markdown(columns, rows)
 
 
