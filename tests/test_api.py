@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 from unittest import mock
 
 from sqlalchemy import func, select
@@ -97,18 +98,19 @@ def test_prefix_lookup_runs_one_bcrypt_check(client, auth_headers):
     assert verify.call_count == 1
 
 
-def test_legacy_key_without_prefix_is_backfilled(client):
+def test_legacy_key_without_prefix_is_backfilled(client, test_session):
     import api.auth as auth
-    from api.database import ApiKey, AsyncSessionLocal
+    from api.database import ApiKey
 
     raw = auth.generate_api_key()
+    org = f"legacy-{uuid.uuid4().hex[:8]}"  # unique: a Postgres test DB may persist between runs
 
     async def prefix(insert: bool):
-        async with AsyncSessionLocal() as db:
+        async with test_session() as db:
             if insert:
-                db.add(ApiKey(key_hash=auth.hash_key(raw), org_name="legacy-pytest"))
+                db.add(ApiKey(key_hash=auth.hash_key(raw), org_name=org))
                 await db.commit()
-            stmt = select(ApiKey.key_prefix).where(ApiKey.org_name == "legacy-pytest")
+            stmt = select(ApiKey.key_prefix).where(ApiKey.org_name == org)
             return (await db.execute(stmt)).scalar_one()
 
     assert asyncio.run(prefix(insert=True)) is None
@@ -126,16 +128,17 @@ def _wait_for(condition, timeout: float = 5.0) -> bool:
     return condition()
 
 
-def test_predictions_are_logged(client):
-    from api.database import ApiKey, AsyncSessionLocal, Prediction
+def test_predictions_are_logged(client, test_session):
+    from api.database import ApiKey, Prediction
 
-    raw = client.post("/admin/api-keys", json={"org_name": "logging-pytest"}, headers=ADMIN_HEADERS).json()["key"]
+    org = f"logging-{uuid.uuid4().hex[:8]}"
+    raw = client.post("/admin/api-keys", json={"org_name": org}, headers=ADMIN_HEADERS).json()["key"]
     for _ in range(3):
         client.post("/predict", json={"text": "hello", "model": "classical"}, headers={"Authorization": f"Bearer {raw}"})
 
     async def count() -> int:
-        async with AsyncSessionLocal() as db:
-            key_id = (await db.execute(select(ApiKey.id).where(ApiKey.org_name == "logging-pytest"))).scalar_one()
+        async with test_session() as db:
+            key_id = (await db.execute(select(ApiKey.id).where(ApiKey.org_name == org))).scalar_one()
             stmt = select(func.count()).select_from(Prediction).where(Prediction.api_key_id == key_id)
             return (await db.execute(stmt)).scalar_one()
 
@@ -160,3 +163,18 @@ def test_cors_closed_by_default(client):
         "/health", headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "GET"}
     )
     assert "access-control-allow-origin" not in response.headers
+
+
+def test_logs_stats_and_revoke(client, auth_headers):
+    client.post("/predict", json={"text": ATTACK, "model": "classical"}, headers=auth_headers)
+    assert _wait_for(lambda: client.get("/api/logs", headers=auth_headers).json()["total"] >= 1)
+    logs = client.get("/api/logs", params={"model": "classical"}, headers=auth_headers).json()
+    assert logs["items"] and logs["items"][0]["model_used"] == "classical"
+    stats = client.get("/api/stats", params={"days": 3}, headers=auth_headers).json()
+    assert len(stats["daily"]) >= 3 and sum(d["MALICIOUS"] + d["SAFE"] + d["SUSPICIOUS"] for d in stats["daily"]) >= 1
+
+    created = client.post("/admin/api-keys", json={"org_name": "revoke-pytest"}, headers=ADMIN_HEADERS).json()
+    revoke_headers = {"Authorization": f"Bearer {created['key']}"}
+    assert client.post("/predict", json={"text": "hi", "model": "classical"}, headers=revoke_headers).status_code == 200
+    assert client.delete(f"/admin/api-keys/{created['id']}", headers=ADMIN_HEADERS).status_code == 200
+    assert client.post("/predict", json={"text": "hi", "model": "classical"}, headers=revoke_headers).status_code == 401

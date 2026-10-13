@@ -74,7 +74,9 @@ class Prediction(Base):
     __tablename__ = "predictions"
     id: Mapped[str] = _uuid_col(primary_key=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
-    api_key_id: Mapped[str | None] = mapped_column(_sa.String(36), _sa.ForeignKey("api_keys.id"), nullable=True)
+    # Same type as api_keys.id (native UUID on Postgres, as in migration 0001); a
+    # String(36) here made every prediction INSERT fail on Postgres.
+    api_key_id: Mapped[str | None] = _uuid_col(foreign_key="api_keys.id")
     input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     input_raw: Mapped[str | None] = mapped_column(String, nullable=True)
     label: Mapped[str] = mapped_column(String(20), nullable=False)

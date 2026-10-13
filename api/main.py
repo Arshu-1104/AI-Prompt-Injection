@@ -400,7 +400,8 @@ async def stats(
 
     # Merge database counts into the pre-filled map
     for row in daily_rows:
-        day = row.date.isoformat()
+        # Postgres returns a date, SQLite's date() a 'YYYY-MM-DD' string.
+        day = row.date if isinstance(row.date, str) else row.date.isoformat()
         if day not in daily_map:
             daily_map[day] = {"date": day, "SAFE": 0, "SUSPICIOUS": 0, "MALICIOUS": 0}
         daily_map[day][row.label] = row.count
