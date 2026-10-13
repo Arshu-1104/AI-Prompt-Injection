@@ -25,7 +25,7 @@ except Exception:
     SKLEARN_METRICS_AVAILABLE = False
 
 from src.metrics import LABELS, compute_ece, summarize_predictions
-from src.preprocess import get_train_test_data
+from src.preprocess import get_splits_with_provenance
 
 try:
     import matplotlib
@@ -142,9 +142,10 @@ def evaluate_all(
     figures_dir = artifacts_dir / "figures"
     figures_dir.mkdir(parents=True, exist_ok=True)
 
-    _, test_df = get_train_test_data()
+    _, test_df, provenance = get_splits_with_provenance()
     if max_samples:
         test_df = test_df.sample(n=min(max_samples, len(test_df)), random_state=42)
+        provenance["evaluated_subset"] = {"max_samples": max_samples, "rows": len(test_df)}
     x_test = test_df["text"].tolist()
     y_true = test_df["label"].tolist()
 
@@ -166,7 +167,7 @@ def evaluate_all(
         raise RuntimeError("No model could be evaluated; see the skip reasons above.")
 
     if write_artifacts:
-        _write_artifacts(rows, outputs, y_true, artifacts_dir, figures_dir)
+        _write_artifacts(rows, outputs, y_true, artifacts_dir, figures_dir, provenance)
     return rows
 
 
@@ -176,6 +177,7 @@ def _write_artifacts(
     y_true: list[str],
     artifacts_dir: Path,
     figures_dir: Path,
+    provenance: dict,
 ) -> None:
     ok_rows = [r for r in rows if r["status"] == "ok"]
     calibration: dict = {}
@@ -237,7 +239,11 @@ def _write_artifacts(
 
     metrics_path = artifacts_dir / "metrics.json"
     metrics = json.loads(metrics_path.read_text(encoding="utf-8")) if metrics_path.exists() else {}
-    metrics["evaluation"] = {"comparison": comparison_df.to_dict(orient="records"), "models": rows}
+    metrics["evaluation"] = {
+        "comparison": comparison_df.to_dict(orient="records"),
+        "models": rows,
+        "dataset": provenance,
+    }
     metrics["calibration"] = calibration
     with open(metrics_path, "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2)

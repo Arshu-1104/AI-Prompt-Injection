@@ -70,13 +70,19 @@ Input Prompt -------->| preprocess.py       |
 
 ## Dataset
 
-- Source: HuggingFace `neuralchemy/Prompt-injection-dataset`
+- Source: HuggingFace `neuralchemy/Prompt-injection-dataset`, config `core`, split `train`,
+  pinned to revision `7d70432` (`DATASET_REVISION` in `src/load_data.py`)
+- `python -m src.load_data` is the only producer of the data. It writes
+  `data/processed_dataset.csv` and `data/dataset_meta.json` (source revision and sha256,
+  build parameters, sha256 of the CSV). Training and evaluation refuse a CSV whose hash
+  doesn't match, and every metrics file records the dataset revision, hashes and split sizes.
+- Fixed 80/20 stratified split (seed 42) for every model and every training seed
 - Base labels mapped to: `SAFE`, `MALICIOUS`
 - Synthetic middle class created: `SUSPICIOUS` (~35% of SAFE prompts modified with subtle manipulation phrases)
 - Hand-authored suspicious samples covering roleplay setups, authority impersonation, context-switching attacks
 - Benign hard negatives to reduce false positives
-- Output file: `data/processed_dataset.csv`
-- Columns: `text`, `label`, `original_label`
+- Output files: `data/processed_dataset.csv`, `data/dataset_meta.json`
+- Columns: `text`, `label`, `original_label`, `category` (source attack category, or how a synthetic row was made)
 
 ---
 

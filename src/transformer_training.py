@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 
 from src.metrics import LABELS, summarize_predictions
-from src.preprocess import clean_text, get_train_test_data
+from src.preprocess import clean_text, get_splits_with_provenance
 from src.sanity_prompts import TEST_PROMPTS
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -156,11 +156,12 @@ def _cap_rows(df: pd.DataFrame, n: int, seed: int) -> pd.DataFrame:
     return pd.concat(parts).sample(frac=1.0, random_state=seed).reset_index(drop=True)
 
 
-def _load_splits(args: argparse.Namespace) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _load_splits(args: argparse.Namespace) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    # The split is the fixed canonical one; --seed only seeds the model and shuffling.
     try:
-        train_df, test_df = get_train_test_data(random_state=args.seed)
-    except FileNotFoundError as exc:
-        raise TrainingError(f"{exc} (run `python -m src.load_data` first)") from exc
+        train_df, test_df, provenance = get_splits_with_provenance()
+    except (FileNotFoundError, ValueError) as exc:
+        raise TrainingError(str(exc)) from exc
     for df in (train_df, test_df):
         unknown = set(df["label"]) - set(LABELS)
         if unknown:
@@ -168,9 +169,10 @@ def _load_splits(args: argparse.Namespace) -> tuple[pd.DataFrame, pd.DataFrame]:
     if args.max_samples:
         train_df = _cap_rows(train_df, args.max_samples, args.seed)
         test_df = _cap_rows(test_df, args.max_samples, args.seed)
+        provenance["smoke_cap"] = {"max_samples": args.max_samples, "train_rows": len(train_df), "test_rows": len(test_df)}
     if test_df.empty:
         raise TrainingError("Test split is empty; cannot evaluate.")
-    return train_df, test_df
+    return train_df, test_df, provenance
 
 
 def _encode(tokenizer, df: pd.DataFrame, max_length: int) -> list[dict]:
@@ -302,7 +304,7 @@ def train_model(spec: ModelSpec, args: argparse.Namespace) -> dict:
     transformers.set_seed(args.seed)
     cuda = torch.cuda.is_available()
     device = torch.cuda.get_device_name(0) if cuda else "CPU"
-    train_df, test_df = _load_splits(args)
+    train_df, test_df, provenance = _load_splits(args)
     print(
         f"[{spec.name}] base={spec.base_model} device={device} torch={torch.__version__} "
         f"transformers={transformers.__version__}\n"
@@ -377,6 +379,7 @@ def train_model(spec: ModelSpec, args: argparse.Namespace) -> dict:
         "base_model": spec.base_model,
         **spec.metadata,
         "smoke_test": smoke,
+        "dataset": provenance,
         "train_samples": len(train_df),
         "hyperparameters": {
             "epochs": args.epochs,

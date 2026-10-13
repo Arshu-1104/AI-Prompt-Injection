@@ -26,7 +26,7 @@ except Exception as exc:  # pragma: no cover - exercised only when sklearn is br
     SKLEARN_AVAILABLE = False
     SKLEARN_IMPORT_ERROR = exc
 
-from src.preprocess import get_train_test_data
+from src.preprocess import get_splits_with_provenance
 
 logger = logging.getLogger(__name__)
 
@@ -130,8 +130,12 @@ class RuleBasedClassifier:
         return self.classes_[np.argmax(probs, axis=1)]
 
 
-def train_classical(random_state: int = 42, allow_rule_based_fallback: bool = False) -> dict:
-    """Train the classical model.
+def fit_classical(random_state: int = 42, allow_rule_based_fallback: bool = False) -> dict:
+    """Select (5-fold CV) and fit the classical model without saving anything.
+
+    *random_state* seeds the classifiers and CV folds only; the train/test split
+    is the fixed canonical one. Returns pipeline, best_name, cross_validation,
+    holdout_test and dataset (provenance).
 
     Raises RuntimeError if scikit-learn is unavailable, unless the caller
     explicitly passes allow_rule_based_fallback=True (e.g. for a quick local
@@ -153,7 +157,7 @@ def train_classical(random_state: int = 42, allow_rule_based_fallback: bool = Fa
                 "train_classical(allow_rule_based_fallback=True) explicitly."
             ) from SKLEARN_IMPORT_ERROR
 
-    train_df, test_df = get_train_test_data(random_state=random_state)
+    train_df, test_df, provenance = get_splits_with_provenance()
     x_train = train_df["text"]
     y_train = train_df["label"]
     x_test = test_df["text"]
@@ -254,6 +258,20 @@ def train_classical(random_state: int = 42, allow_rule_based_fallback: bool = Fa
             }
         }
 
+    return {
+        "pipeline": best_pipeline,
+        "best_name": best_name,
+        "cross_validation": cv_results,
+        "holdout_test": holdout_metrics,
+        "dataset": provenance,
+    }
+
+
+def train_classical(random_state: int = 42, allow_rule_based_fallback: bool = False) -> dict:
+    """Train the classical model and save it to models/classical_model.pkl."""
+    fitted = fit_classical(random_state, allow_rule_based_fallback)
+    best_pipeline, best_name = fitted["pipeline"], fitted["best_name"]
+
     root = Path(__file__).resolve().parents[1]
     models_dir = root / "models"
     artifacts_dir = root / "artifacts"
@@ -261,7 +279,7 @@ def train_classical(random_state: int = 42, allow_rule_based_fallback: bool = Fa
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
     joblib.dump(best_pipeline, models_dir / "classical_model.pkl")
-    if SKLEARN_AVAILABLE:
+    if not isinstance(best_pipeline, RuleBasedClassifier):
         fitted_vectorizer = best_pipeline.named_steps["tfidf"]
         joblib.dump(fitted_vectorizer, models_dir / "tfidf_vectorizer.pkl")
 
@@ -272,8 +290,10 @@ def train_classical(random_state: int = 42, allow_rule_based_fallback: bool = Fa
             metrics_data = json.load(f)
     metrics_data["classical_model"] = {
         "best_model": best_name,
-        "cross_validation": cv_results,
-        "holdout_test": holdout_metrics,
+        "random_state": random_state,
+        "cross_validation": fitted["cross_validation"],
+        "holdout_test": fitted["holdout_test"],
+        "dataset": fitted["dataset"],
     }
     with open(metrics_path, "w", encoding="utf-8") as f:
         json.dump(metrics_data, f, indent=2)
