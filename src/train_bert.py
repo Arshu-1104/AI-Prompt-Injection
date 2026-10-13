@@ -2,7 +2,7 @@
 
     python -m src.train_bert --epochs 3 --batch-size 16 --seed 42
     python -m src.train_bert --max-samples 64 --epochs 1     # CPU smoke test
-    python -m src.train_bert --push-to-hub <user>/promptguard-bert   # then set BERT_MODEL_ID
+    python -m src.train_bert --push-to-hub Arshu-110405/promptguard-bert   # then set BERT_MODEL_ID
 """
 from __future__ import annotations
 

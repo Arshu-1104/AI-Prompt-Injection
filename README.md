@@ -145,6 +145,7 @@ AI-Prompt-Injection/
 │   ├── train_guard_model.py
 │   ├── transformer_training.py  # shared bert/guard fine-tuning loop
 │   ├── model_sources.py         # BERT_MODEL_ID / GUARD_MODEL_ID resolution
+│   ├── hub_upload.py            # private Hub upload: whoami check + model card with licenses
 │   ├── metrics.py
 │   ├── sanity_prompts.py
 │   ├── predict.py
@@ -183,7 +184,7 @@ AI-Prompt-Injection/
 - Any model card must state the data licenses: neuralchemy is Apache-2.0 but includes a WildGuard /
   JudgeComparison source labelled "Research" (and HackAPrompt, CC BY 4.0). xTRam1 states no license.
   The Qualifire benchmark is CC-BY-NC-4.0 and gated, and must not be redistributed.
-- `python -m src.eval_only --bert-model-id <user>/promptguard-bert --guard-model-id <user>/promptguard-guard`
+- `python -m src.eval_only --bert-model-id Arshu-110405/promptguard-bert --guard-model-id Arshu-110405/promptguard-guard`
   downloads the weights, evaluates on the official test split on CPU with progress output, and writes
   the same metrics JSON as `src.evaluate`.
 - `--quantize-guard` adds dynamic int8 Guard (`torch.ao.quantization.quantize_dynamic` on the Linear
@@ -447,13 +448,25 @@ ModernBERT needs `transformers>=4.48`. The guard script downloads `answerdotai/M
 (~600 MB) and exits with a clear message when offline or out of memory.
 
 **Host the weights on the Hugging Face Hub.** `models/bert_model` and `models/guard_model`
-in git are Git LFS pointer stubs; Docker and Render builds do not use them.
+in git are Git LFS pointer stubs; Docker and Render builds do not use them. The weights live in
+**private** repos on the Hugging Face account **Arshu-110405** (the GitHub account is Arshu-1104):
+`Arshu-110405/promptguard-bert` and `Arshu-110405/promptguard-guard`.
 
 ```bash
-export HF_TOKEN=hf_...   # write token
-python -m src.train_bert --push-to-hub <user>/promptguard-bert          # private by default
-python -m src.train_guard_model --push-to-hub <user>/promptguard-guard
+export HF_TOKEN=hf_...   # write token of the Arshu-110405 account
+# Upload already-trained weights (no retraining)
+python -m src.hub_upload --model bert  --path artifacts/paper_runs/bert/seed_42
+python -m src.hub_upload --model guard --path artifacts/paper_runs/guard/seed_42
+# ...or train and upload in one go
+python -m src.train_bert --push-to-hub Arshu-110405/promptguard-bert          # private by default
+python -m src.train_guard_model --push-to-hub Arshu-110405/promptguard-guard
 ```
+
+Before creating or uploading anything, both paths check `huggingface_hub.whoami()`. They stop if
+the token's account is not the repo's namespace (`--push-to-hub` checks before training starts).
+The upload contains the weights, config, tokenizer, `metrics.json` and a model card generated from
+`metrics.json`. The card states the training dataset, revision and every source license. Smoke-test
+runs and runs that failed the sanity check are refused.
 
 At runtime the API loads `BERT_MODEL_ID` / `GUARD_MODEL_ID` (Hub repo id or local path;
 `HF_TOKEN` for private repos) and falls back to `models/bert_model` / `models/guard_model`
@@ -463,7 +476,7 @@ when those hold real weights.
 
 ```bash
 docker build -f Dockerfile.backend --build-arg INSTALL_HEAVY=1 -t promptguard-api:heavy .
-docker run -p 8000:8000 -e ENABLE_HEAVY_MODELS=true -e WEB_CONCURRENCY=1   -e BERT_MODEL_ID=<user>/promptguard-bert -e GUARD_MODEL_ID=<user>/promptguard-guard   -e HF_TOKEN=hf_... -e DATABASE_URL=... -e ADMIN_SECRET_KEY=... promptguard-api:heavy
+docker run -p 8000:8000 -e ENABLE_HEAVY_MODELS=true -e WEB_CONCURRENCY=1   -e BERT_MODEL_ID=Arshu-110405/promptguard-bert -e GUARD_MODEL_ID=Arshu-110405/promptguard-guard   -e HF_TOKEN=hf_... -e DATABASE_URL=... -e ADMIN_SECRET_KEY=... promptguard-api:heavy
 ```
 
 With docker compose, set `INSTALL_HEAVY=1`, `ENABLE_HEAVY_MODELS=true` and the model ids in `.env`.
@@ -502,10 +515,12 @@ python -m src.load_data
 # B1 smoke tests
 python -m src.train_bert --max-samples 64 --epochs 1 --batch-size 8
 python -m src.train_guard_model --max-samples 64 --epochs 1 --batch-size 8
-# B2 full training + upload to PRIVATE repos (HF_TOKEN with write access); check metrics.json + sanity_check
+# B2 full training + upload to PRIVATE repos on the HF account Arshu-110405 (HF_TOKEN of that account,
+# write access); check metrics.json + sanity_check. Weights already trained? Upload them instead:
+#   python -m src.hub_upload --model bert --path artifacts/paper_runs/bert/seed_42   (same for guard)
 export HF_TOKEN=hf_...
-python -m src.train_bert --epochs 3 --max-length 384 --seed 42 --push-to-hub <user>/promptguard-bert
-python -m src.train_guard_model --epochs 3 --max-length 384 --batch-size 8 --seed 42 --push-to-hub <user>/promptguard-guard
+python -m src.train_bert --epochs 3 --max-length 384 --seed 42 --push-to-hub Arshu-110405/promptguard-bert
+python -m src.train_guard_model --epochs 3 --max-length 384 --batch-size 8 --seed 42 --push-to-hub Arshu-110405/promptguard-guard
 # B3 paper results (bootstrap CIs, McNemar, CPU latency); reuses finished seeds that still match the data
 python -m src.paper_results --seeds 5 --guard-seeds 3 --protectai --max-length 384 --guard-batch-size 8 --reuse-finished-seeds
 # B4 external evaluation + diagnosis (local paths or Hub ids); Qualifire needs HF_TOKEN with its terms accepted
@@ -517,7 +532,7 @@ python -m src.eval_only --models guard --quantize-guard --guard-model-id artifac
 # B6 heavy image (needs Docker); then measure memory with `docker stats`
 docker build -f Dockerfile.backend --build-arg INSTALL_HEAVY=1 -t promptguard-api:heavy .
 docker run -p 8000:8000 -e ENABLE_HEAVY_MODELS=true -e WEB_CONCURRENCY=1 -e ADMIN_SECRET_KEY=change-me \
-  -e BERT_MODEL_ID=<user>/promptguard-bert -e GUARD_MODEL_ID=<user>/promptguard-guard -e HF_TOKEN=$HF_TOKEN \
+  -e BERT_MODEL_ID=Arshu-110405/promptguard-bert -e GUARD_MODEL_ID=Arshu-110405/promptguard-guard -e HF_TOKEN=$HF_TOKEN \
   promptguard-api:heavy
 curl http://localhost:8000/health
 ```
@@ -601,9 +616,11 @@ Features: model switcher, single prompt analysis, risk badge, confidence bar, pa
 ## Known Limitations
 
 1. **Trained bert/guard weights are not on the Hub yet.** They were trained locally
-   (`artifacts/paper_runs/`) but not uploaded: that needs an `HF_TOKEN` with write access. When
-   uploaded, the repos are private by default, and their model cards must state the data licenses
-   (item 7). Until then, serve them from a local path via `BERT_MODEL_ID` / `GUARD_MODEL_ID`.
+   (`artifacts/paper_runs/`) but not uploaded: that needs an `HF_TOKEN` of the Hugging Face account
+   Arshu-110405 with write access (`python -m src.hub_upload`, above). The repos are private, and
+   the generated model card states the data licenses (item 7). Until they exist, the configured
+   defaults (`Arshu-110405/promptguard-bert` / `-guard`) report `download_failed` when heavy models
+   are enabled. Serve from a local path via `BERT_MODEL_ID` / `GUARD_MODEL_ID` instead.
 2. **Robustness gate: binary, baseline 0.90.** CI gates on binary flagged-or-not detection over the
    `src/robustness.py` adversarial suite: SAFE vs not-SAFE must be at least `BINARY_ROBUSTNESS_BASELINE`
    (default 0.90). Rationale: the SUSPICIOUS-vs-MALICIOUS expectations in the suite are hand-assigned

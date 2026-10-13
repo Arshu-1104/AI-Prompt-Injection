@@ -1,8 +1,8 @@
 """Evaluate published weights on CPU - no training code, no GPU.
 
-    BERT_MODEL_ID=<user>/promptguard-bert GUARD_MODEL_ID=<user>/promptguard-guard \\
+    BERT_MODEL_ID=Arshu-110405/promptguard-bert GUARD_MODEL_ID=Arshu-110405/promptguard-guard \\
         python -m src.eval_only
-    python -m src.eval_only --bert-model-id <user>/promptguard-bert --guard-model-id <user>/promptguard-guard
+    python -m src.eval_only --bert-model-id Arshu-110405/promptguard-bert --guard-model-id Arshu-110405/promptguard-guard
     python -m src.eval_only --models guard --quantize-guard     # also dynamic int8 Guard
 
 Downloads the weights from the Hugging Face Hub (HF_TOKEN for private repos; a

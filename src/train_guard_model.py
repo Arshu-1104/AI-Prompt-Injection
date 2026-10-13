@@ -2,7 +2,7 @@
 
     python -m src.train_guard_model --epochs 3 --batch-size 16 --seed 42
     python -m src.train_guard_model --max-samples 64 --epochs 1 --batch-size 8   # CPU smoke test
-    python -m src.train_guard_model --push-to-hub <user>/promptguard-guard   # then set GUARD_MODEL_ID
+    python -m src.train_guard_model --push-to-hub Arshu-110405/promptguard-guard   # then set GUARD_MODEL_ID
 
 Downloads answerdotai/ModernBERT-base (~600 MB) on first run; needs transformers>=4.48.
 """

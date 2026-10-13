@@ -65,7 +65,9 @@ def build_arg_parser(spec: ModelSpec) -> argparse.ArgumentParser:
         "--push-to-hub",
         metavar="REPO_ID",
         default=None,
-        help="After a successful run, upload model, tokenizer and metrics.json to this Hugging Face Hub repo (needs HF_TOKEN with write access).",
+        help="After a successful run, upload model, tokenizer, metrics.json and a model card to this Hugging Face Hub "
+             "repo, e.g. Arshu-110405/promptguard-bert (needs HF_TOKEN with write access; the token's account must own "
+             "the repo namespace, checked before training).",
     )
     parser.add_argument("--hub-public", action="store_true", help="Create the Hub repo as public (default: private).")
     parser.add_argument("--checkpoint-dir", type=Path, default=None,
@@ -376,15 +378,26 @@ def _write_json(path: Path, payload: dict) -> None:
         json.dump(payload, f, indent=2)
 
 
-def _push_to_hub(spec: ModelSpec, args: argparse.Namespace, model, tokenizer, metrics_path: Path) -> None:
-    from huggingface_hub import HfApi
+def _check_hub_account(repo_id: str) -> None:
+    """Before training: the HF_TOKEN account must own the target repo's namespace."""
+    from src.hub_upload import HubUploadError, check_namespace
+
+    try:
+        account = check_namespace(repo_id)
+    except HubUploadError as exc:
+        raise TrainingError(f"--push-to-hub {repo_id}: {exc}") from exc
+    print(f"--push-to-hub: HF_TOKEN account {account!r} owns {repo_id}")
+
+
+def _push_to_hub(spec: ModelSpec, args: argparse.Namespace, output_dir: Path) -> None:
+    from src.hub_upload import HubUploadError, upload_dir
 
     private = not args.hub_public
-    print(f"\nUploading to https://huggingface.co/{args.push_to_hub} (private={private}) ...")
     try:
-        model.push_to_hub(args.push_to_hub, private=private)
-        tokenizer.push_to_hub(args.push_to_hub, private=private)
-        HfApi().upload_file(path_or_fileobj=str(metrics_path), path_in_repo="metrics.json", repo_id=args.push_to_hub)
+        # Weights, tokenizer, metrics.json and a model card with the data licenses.
+        upload_dir(output_dir, args.push_to_hub, private=private)
+    except HubUploadError as exc:
+        raise TrainingError(f"Upload to {args.push_to_hub} stopped: {exc} The model is still saved locally.") from exc
     except Exception as exc:
         if _is_network_error(exc):
             raise TrainingError(f"Upload to {args.push_to_hub} failed: Hugging Face Hub unreachable.") from exc
@@ -403,6 +416,8 @@ def train_model(spec: ModelSpec, args: argparse.Namespace, shared_outputs: bool 
     smoke = bool(args.max_samples)
     if smoke and args.push_to_hub:
         raise TrainingError("--push-to-hub cannot be combined with --max-samples; smoke-test weights are not fit to serve.")
+    if args.push_to_hub:
+        _check_hub_account(args.push_to_hub)  # fail before spending time on training
 
     torch, transformers = _import_runtime()
     from transformers import DataCollatorWithPadding, Trainer, TrainingArguments
@@ -591,5 +606,5 @@ def train_model(spec: ModelSpec, args: argparse.Namespace, shared_outputs: bool 
     print(f"[{spec.name}] metrics: {artifact_metrics_path}")
 
     if args.push_to_hub:
-        _push_to_hub(spec, args, model, tokenizer, output_dir / "metrics.json")
+        _push_to_hub(spec, args, output_dir)
     return report
