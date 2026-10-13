@@ -59,6 +59,25 @@ _RATE_WINDOW: dict[str, deque[float]] = defaultdict(deque)
 logger = logging.getLogger("uvicorn.error")
 MODEL_TYPES = ("classical", "bert", "guard")
 
+# The event loop keeps only weak references to tasks, so a fire-and-forget
+# prediction-log task can be garbage-collected before it finishes. Hold strong
+# references until each task completes, and surface failures in the log.
+_background_tasks: set[asyncio.Task] = set()
+SHUTDOWN_DRAIN_SECONDS = 5.0
+
+
+def _on_background_task_done(task: asyncio.Task) -> None:
+    _background_tasks.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        logger.error("Background task failed", exc_info=task.exception())
+
+
+def _spawn_background(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_on_background_task_done)
+    return task
+
 
 def _heavy_models_enabled() -> bool:
     return os.environ.get("ENABLE_HEAVY_MODELS", "false").lower() == "true"
@@ -105,6 +124,11 @@ async def lifespan(app: FastAPI):
         sorted(set(MODEL_TYPES) - set(app.state.analyzers)) or "none",
     )
     yield
+    # Let in-flight prediction logs reach the database before shutting down.
+    if _background_tasks:
+        _, pending = await asyncio.wait(set(_background_tasks), timeout=SHUTDOWN_DRAIN_SECONDS)
+        if pending:
+            logger.warning("Shutdown: %d prediction log writes did not finish", len(pending))
 
 
 app = FastAPI(title="PromptGuard API", version="1.0.0", lifespan=lifespan)
@@ -212,7 +236,7 @@ async def predict(
     analyzer = _get_analyzer(payload.model)
     result = await run_in_threadpool(analyzer.predict, payload.text)
     latency_ms = (time.monotonic() - t0) * 1000
-    asyncio.create_task(_log_prediction(result, payload, api_key, latency_ms))
+    _spawn_background(_log_prediction(result, payload, api_key, latency_ms))
     return {
         "label": result["label"],
         "confidence": result["confidence"],
@@ -244,7 +268,7 @@ async def batch_predict(
     # inflated when batch requests are common.
     per_item_ms = total_ms / max(len(payload.texts), 1)
     for text, item in zip(payload.texts, predictions):
-        asyncio.create_task(
+        _spawn_background(
             _log_prediction(item, PredictRequest(text=text, model=payload.model), api_key, per_item_ms)
         )
     return [
