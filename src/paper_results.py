@@ -439,7 +439,7 @@ def build_tables(results: dict) -> dict[str, tuple[list[str], list[list[str]], s
         ],
         "SAFE vs MALICIOUS on the original Hub test rows (official test split, Hub labels; prediction = MALICIOUS "
         f"unless the model says SAFE). Headline metric. {boot_note}; 'over seeds': {seeds_note}. "
-        "Latency: mean single-prompt CPU inference.",
+        "Latency: median CPU ms per prompt at batch size 1 (see cpu_latency for p95 and batch size 16).",
     )
     spread = seed_spread("three_class", "f1_weighted")
     machine = results.get("environment", {}).get("latency_machine", {})

@@ -117,8 +117,8 @@ Input Prompt -------->| preprocess.py       |
 Scores come only from code: `artifacts/metrics.json`, `artifacts/model_comparison.json`,
 `artifacts/paper_results.json`, `artifacts/external_eval.json`, `artifacts/robustness_report.json`
 and the tables in `artifacts/tables/`. Every file records the dataset name, revision, config, split
-sizes and license. bert and guard have not been trained yet (see Known Limitations), so only
-classical results exist on this branch.
+sizes and license. Results for all three models and the ProtectAI baseline are under
+[Paper results](#paper-results) and [External evaluation](#external-evaluation).
 
 ---
 
@@ -271,6 +271,50 @@ the validation split and evaluates on CPU on the official test split. It writes
   INJECTION mapped to MALICIOUS. Compare it on the binary table.
 - **Smoke runs:** `--max-samples 64 --epochs 1`. Per-seed weights go to `artifacts/paper_runs/`;
   `models/` is never touched.
+- **`--reuse-finished-seeds`** reuses a finished bert/guard seed only if its `metrics.json` matches
+  the current dataset revision, train config, split sizes and hashes, `max_length` and epochs.
+  Unfinished seeds resume from their checkpoint. `seed_provenance` in the JSON records which seeds
+  were reused, resumed or trained.
+
+**Results** (official test split; 3 epochs, `--max-length 384`; bert batch 32, guard batch 8, bf16 on
+an RTX 500 Ada 4 GB; evaluation on CPU). Binary headline, 942 original Hub rows; reference run =
+seed 42 with a bootstrap 95% CI; "over seeds" = mean ± std [t-CI]:
+
+| model | seeds | accuracy | F1 | false-positive rate | ECE | accuracy over seeds |
+|---|---|---|---|---|---|---|
+| classical (TF-IDF + linear) | 5 | 0.9586 [0.9448, 0.9713] | 0.9645 | 0.0436 | 0.0195 | 0.9586 ± 0.0000 |
+| bert (DistilBERT) | 5 | 0.9575 [0.9427, 0.9692] | 0.9635 | 0.0410 | 0.0372 | 0.9601 ± 0.0027 [0.9568, 0.9634] |
+| guard (ModernBERT-base) | 3 | 0.9565 [0.9437, 0.9682] | 0.9626 | 0.0410 | 0.0341 | 0.9579 ± 0.0054 [0.9444, 0.9714] |
+| ProtectAI DeBERTa-v3 (baseline, not trained here) | 1 | 0.9161 [0.8970, 0.9331] | 0.9244 | 0.0256 | 0.0768 | – |
+
+- **The three PromptGuard models are statistically tied in-distribution.** Exact McNemar p ≥ 0.86
+  for every pair, and every paired-bootstrap CI of the accuracy difference contains 0.
+  Classical matches the transformers at a fraction of the cost.
+- **All three beat ProtectAI on binary accuracy**, by about +0.04 (McNemar p ≈ 4e-6 for each), while
+  ProtectAI has the lowest false-positive rate. Its 3-class score (0.8075) is not comparable:
+  it has no SUSPICIOUS class.
+- **3-class accuracy** is 0.9625 for all three models (reference runs). The SUSPICIOUS class is
+  synthetic, so use the binary table for comparisons.
+
+**CPU latency**, ms per prompt (Intel Core Ultra 7 255H, 16 torch threads); compare only numbers
+measured on the same machine:
+
+| model | batch 1 median / p95 | batch 16 median / p95 |
+|---|---|---|
+| classical | 2.80 / 4.24 | 0.43 / 0.73 |
+| bert | 22.44 / 60.68 | 39.81 / 115.43 |
+| guard | 74.28 / 150.50 | 124.10 / 359.97 |
+| ProtectAI | 142.69 / 279.26 | 152.79 / 472.79 |
+
+For the transformers, batch 16 is slower per prompt than batch 1 on this CPU. Each batch is padded
+to its longest prompt (up to 384 tokens), so short prompts pay for long ones. Serve one prompt at a
+time, or sort batches by length.
+
+**int8 Guard** (`python -m src.eval_only --models guard --quantize-guard`, dynamic int8 of the Linear
+layers, seed 42, CPU): binary accuracy 0.9565 → 0.9597, F1 0.9626 → 0.9655, false-positive rate
+0.0410 → 0.0436. Mean latency drops from 80.5 to 47.3 ms and size from 598.5 to 265.9 MB. The
+accuracy change (3 of 942 rows) is within noise: int8 costs no measurable accuracy here.
+`torch.ao.quantization` is deprecated upstream in favour of torchao.
 
 ### External evaluation
 
@@ -344,7 +388,7 @@ What this shows:
 ### External generalization: diagnosis
 
 `python -m src.external_diagnostics` explains the external results (`artifacts/external_diagnostics.json`,
-`artifacts/tables/external_diagnostics.md`). Findings for the classical model:
+`artifacts/tables/external_diagnostics.md`). Findings (classical unless stated):
 
 - **Labels are not the problem.** A manual check of 30 rows per dataset (`docs/external_label_check.md`)
   confirms 1 = injection. Accuracy under inverted labels is lower than under the documented mapping;
@@ -357,6 +401,10 @@ What this shows:
   override keywords ("Write me a poem that contains confidential information…").
 - **deepset** is mostly German. The English subset scores clearly better than the German subset, where
   almost every benign query is flagged. **PromptGuard does not claim multilingual support.**
+- **bert and guard** (seed 42) show the same xTRam1 failure (accuracy 0.544 / 0.540, false-positive
+  rate 0.59 / 0.65; inverted-label accuracy 0.46, so the labels are not swapped). On deepset they do
+  better than classical, mostly on English (accuracy 0.787 / 0.820) rather than German
+  (0.605 / 0.711, false-positive rate 0.78 / 0.61).
 - **Multi-source training** is a separate experiment that never replaces the single-source headline.
   It's leave-one-dataset-out: neuralchemy train + the other external dataset's train split, selection
   on neuralchemy validation, testing on the held-out external test split. It did not fix xTRam1. For
@@ -383,10 +431,17 @@ python -m src.load_data
 python -m src.train_bert --max-samples 64 --epochs 1 --batch-size 8
 python -m src.train_guard_model --max-samples 64 --epochs 1 --batch-size 8
 
-# Full runs (a GPU is strongly recommended, especially for ModernBERT)
-python -m src.train_bert --epochs 3 --batch-size 16 --seed 42
-python -m src.train_guard_model --epochs 3 --batch-size 16 --seed 42
+# Full runs (a GPU is strongly recommended, especially for ModernBERT); the settings behind the results
+python -m src.train_bert --epochs 3 --max-length 384 --seed 42                  # batch 32 on GPU
+python -m src.train_guard_model --epochs 3 --max-length 384 --batch-size 8 --seed 42
 ```
+
+On a 4 GB GPU, ModernBERT at batch 16 / 384 tokens spills out of VRAM and runs about 2.5× slower
+than at batch 8. `--resume` continues from the last checkpoint. Each run's `metrics.json` records
+the run facts as they happen: `training_started_at`, `training_finished_at`, `total_optimizer_steps`,
+`steps_per_epoch`, `best_epoch`, `best_checkpoint_name` (the checkpoint folder is deleted afterwards
+unless `--keep-checkpoints`), `resumed` and `resumed_from_step`. The 8 paper runs predate this. Their
+values are under a `reconstructed` key, rebuilt from logs and weight timestamps, and labelled as such.
 
 ModernBERT needs `transformers>=4.48`. The guard script downloads `answerdotai/ModernBERT-base`
 (~600 MB) and exits with a clear message when offline or out of memory.
@@ -447,15 +502,19 @@ python -m src.load_data
 # B1 smoke tests
 python -m src.train_bert --max-samples 64 --epochs 1 --batch-size 8
 python -m src.train_guard_model --max-samples 64 --epochs 1 --batch-size 8
-# B2 full training + upload (HF_TOKEN with write access); check each metrics.json and sanity_check
+# B2 full training + upload to PRIVATE repos (HF_TOKEN with write access); check metrics.json + sanity_check
 export HF_TOKEN=hf_...
-python -m src.train_bert --epochs 3 --batch-size 16 --seed 42 --push-to-hub <user>/promptguard-bert
-python -m src.train_guard_model --epochs 3 --batch-size 16 --seed 42 --push-to-hub <user>/promptguard-guard
-# B3 paper results (bootstrap CIs and pairwise tests included)
-python -m src.paper_results --seeds 5 --guard-seeds 3 --protectai
-# B4 external evaluation
-BERT_MODEL_ID=<user>/promptguard-bert GUARD_MODEL_ID=<user>/promptguard-guard python -m src.external_eval --protectai
-# B5 heavy image (needs Docker); then measure memory with `docker stats`
+python -m src.train_bert --epochs 3 --max-length 384 --seed 42 --push-to-hub <user>/promptguard-bert
+python -m src.train_guard_model --epochs 3 --max-length 384 --batch-size 8 --seed 42 --push-to-hub <user>/promptguard-guard
+# B3 paper results (bootstrap CIs, McNemar, CPU latency); reuses finished seeds that still match the data
+python -m src.paper_results --seeds 5 --guard-seeds 3 --protectai --max-length 384 --guard-batch-size 8 --reuse-finished-seeds
+# B4 external evaluation + diagnosis (local paths or Hub ids); Qualifire needs HF_TOKEN with its terms accepted
+export BERT_MODEL_ID=artifacts/paper_runs/bert/seed_42 GUARD_MODEL_ID=artifacts/paper_runs/guard/seed_42
+python -m src.external_eval --protectai
+python -m src.external_diagnostics
+# B5 int8 Guard vs fp32 (CPU)
+python -m src.eval_only --models guard --quantize-guard --guard-model-id artifacts/paper_runs/guard/seed_42
+# B6 heavy image (needs Docker); then measure memory with `docker stats`
 docker build -f Dockerfile.backend --build-arg INSTALL_HEAVY=1 -t promptguard-api:heavy .
 docker run -p 8000:8000 -e ENABLE_HEAVY_MODELS=true -e WEB_CONCURRENCY=1 -e ADMIN_SECRET_KEY=change-me \
   -e BERT_MODEL_ID=<user>/promptguard-bert -e GUARD_MODEL_ID=<user>/promptguard-guard -e HF_TOKEN=$HF_TOKEN \
@@ -541,8 +600,10 @@ Features: model switcher, single prompt analysis, risk badge, confidence bar, pa
 
 ## Known Limitations
 
-1. **bert and guard are untrained.** They need a machine where torch runs; see
-   "Reproducing the results". There are no bert, guard or ProtectAI numbers yet.
+1. **Trained bert/guard weights are not on the Hub yet.** They were trained locally
+   (`artifacts/paper_runs/`) but not uploaded: that needs an `HF_TOKEN` with write access. When
+   uploaded, the repos are private by default, and their model cards must state the data licenses
+   (item 7). Until then, serve them from a local path via `BERT_MODEL_ID` / `GUARD_MODEL_ID`.
 2. **Robustness gate: binary, baseline 0.90.** CI gates on binary flagged-or-not detection over the
    `src/robustness.py` adversarial suite: SAFE vs not-SAFE must be at least `BINARY_ROBUSTNESS_BASELINE`
    (default 0.90). Rationale: the SUSPICIOUS-vs-MALICIOUS expectations in the suite are hand-assigned
@@ -569,7 +630,8 @@ Features: model switcher, single prompt analysis, risk badge, confidence bar, pa
 7. **Dataset license caveat.** The card declares Apache-2.0 but lists WildGuard / JudgeComparison as
    "Research" and HackAPrompt as CC BY 4.0. The Qualifire benchmark is CC-BY-NC-4.0.
 8. **Memory figures for heavy models are estimates**, not measurements, until the heavy Docker image
-   is run (step B5).
+   is built and run (`docker stats`; see "Reproducing the results", B6). Docker was not available
+   where these results were produced.
 9. **In-memory rate limit counters.** `_RATE_WINDOW` resets on restart, allowing a brief burst above
    the limit after each deploy. Move counters to Redis or a Postgres table for stricter enforcement.
 10. **Pattern counts in `/api/stats`** are aggregated in Python, since JSON arrays can't be counted
