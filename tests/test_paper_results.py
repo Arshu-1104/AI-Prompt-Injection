@@ -118,3 +118,28 @@ def test_latency_benchmark_shapes():
     assert out["batch_1"]["p95_ms_per_prompt"] >= out["batch_1"]["median_ms_per_prompt"] >= 0
     info = latency.machine_info()
     assert info["cpu_model"] and info["logical_cpus"]
+
+
+def test_reusable_seed_rules(tmp_path):
+    import json
+
+    prov = {"revision": "abc", "train_config": "full",
+            "processed": {"train": {"rows": 10, "sha256": "t"}, "validation": {"rows": 5, "sha256": "v"}, "test": {"rows": 5, "sha256": "s"}}}
+    seed = tmp_path / "seed_42"
+    assert not pr.reusable_seed(seed, prov, 384, 3)[0]
+    seed.mkdir()
+    (seed / "config.json").write_text("{}")
+    (seed / "model.safetensors").write_bytes(b"x")
+    metrics = {"smoke_test": False, "sanity_check": {"passed": True}, "hyperparameters": {"max_length": 384, "epochs": 3},
+               "dataset": {"revision": "abc", "train_config": "full", "processed": prov["processed"]}}
+    (seed / "metrics.json").write_text(json.dumps(metrics))
+    assert pr.reusable_seed(seed, prov, 384, 3)[0]
+    ok, why = pr.reusable_seed(seed, prov, 128, 3)
+    assert not ok and "max_length" in why
+    ok, why = pr.reusable_seed(seed, {**prov, "revision": "new"}, 384, 3)
+    assert not ok and "revision" in why
+    changed = {**prov, "processed": {**prov["processed"], "test": {"rows": 6, "sha256": "s"}}}
+    ok, why = pr.reusable_seed(seed, changed, 384, 3)
+    assert not ok and "test split size" in why
+    (seed / "metrics.json").write_text(json.dumps({**metrics, "smoke_test": True}))
+    assert "smoke" in pr.reusable_seed(seed, prov, 384, 3)[1]

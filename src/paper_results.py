@@ -224,6 +224,40 @@ def run_classical(seeds, test_df, categories, latency_texts) -> dict:
     return {"runs": runs, "latency": latency}
 
 
+WEIGHT_FILES = ("model.safetensors", "pytorch_model.bin")
+
+
+def reusable_seed(out_dir: Path, provenance: dict, max_length: int, epochs: float) -> tuple[bool, str]:
+    """Can a finished seed be reused instead of retrained? Returns (ok, reason)."""
+    metrics_path = out_dir / "metrics.json"
+    if not metrics_path.exists() or not (out_dir / "config.json").exists() or not any(
+        (out_dir / w).exists() for w in WEIGHT_FILES
+    ):
+        return False, "no complete result (metrics.json + config + weights)"
+    m = json.loads(metrics_path.read_text(encoding="utf-8"))
+    if m.get("smoke_test"):
+        return False, "previous run was a smoke test"
+    if not m.get("sanity_check", {}).get("passed", False):
+        return False, "previous run failed its sanity check"
+    ds = m.get("dataset", {})
+    if ds.get("revision") != provenance["revision"]:
+        return False, f"dataset revision {str(ds.get('revision'))[:7]} != current {provenance['revision'][:7]}"
+    if ds.get("train_config") != provenance["train_config"]:
+        return False, f"train config {ds.get('train_config')} != current {provenance['train_config']}"
+    for split, info in provenance["processed"].items():
+        old = ds.get("processed", {}).get(split, {})
+        if old.get("rows") != info["rows"]:
+            return False, f"{split} split size {old.get('rows')} != current {info['rows']}"
+        if old.get("sha256") != info["sha256"]:
+            return False, f"{split} split sha256 differs from the current data"
+    hp = m.get("hyperparameters", {})
+    if hp.get("max_length") != max_length:
+        return False, f"max_length {hp.get('max_length')} != requested {max_length}"
+    if float(hp.get("epochs", -1)) != float(epochs):
+        return False, f"epochs {hp.get('epochs')} != requested {epochs}"
+    return True, "matches dataset revision, train config, split sizes/hashes, max_length and epochs"
+
+
 def run_transformer(model_type, seeds, test_df, categories, latency_texts, args) -> dict:
     from src.transformer_training import TrainingError, build_arg_parser, train_model
 
@@ -231,8 +265,24 @@ def run_transformer(model_type, seeds, test_df, categories, latency_texts, args)
         {"bert": "src.train_bert", "guard": "src.train_guard_model"}[model_type], fromlist=["SPEC"]
     ).SPEC
     runs, latency = [], None
+    _, _, _, provenance = get_splits()
+    effective_max_length = args.max_length or build_arg_parser(spec).parse_args([]).max_length
     for seed in seeds:
         out_dir = RUNS_DIR / model_type / f"seed_{seed}"
+        if args.reuse_finished_seeds and not args.max_samples:
+            ok, why = reusable_seed(out_dir, provenance, effective_max_length, args.epochs)
+            if ok:
+                print(f"[{model_type}] seed {seed}: REUSED ({why})")
+                predictor = TransformerPredictor(str(out_dir))
+                metrics = evaluate_predictor(predictor, test_df, categories)
+                runs.append({"seed": seed, "status": "ok", "weights": out_dir.relative_to(ROOT).as_posix(),
+                             "how": "reused", "how_reason": why, **metrics})
+                if latency is None:
+                    latency = measure_latency(predictor, latency_texts)
+                continue
+            print(f"[{model_type}] seed {seed}: not reusable - {why}")
+        else:
+            why = "reuse not requested"
         cli = ["--seed", str(seed), "--epochs", str(args.epochs), "--output-dir", str(out_dir)]
         batch_size = args.guard_batch_size if model_type == "guard" and args.guard_batch_size else args.batch_size
         if batch_size:
@@ -241,7 +291,14 @@ def run_transformer(model_type, seeds, test_df, categories, latency_texts, args)
             cli += ["--max-length", str(args.max_length)]
         if args.max_samples:
             cli += ["--max-samples", str(args.max_samples)]
-        print(f"[{model_type}] seed {seed}: training -> {out_dir}")
+        how = "trained"
+        checkpoint_dir = out_dir.parent / f"{out_dir.name}_checkpoints"
+        checkpoints = sorted(checkpoint_dir.glob("checkpoint-*"), key=lambda c: int(c.name.split("-")[-1])) \
+            if checkpoint_dir.exists() else []
+        if args.reuse_finished_seeds and checkpoints and not args.max_samples:
+            cli += ["--resume", "--checkpoint-dir", str(checkpoint_dir)]
+            how = f"resumed from {checkpoints[-1].name}"
+        print(f"[{model_type}] seed {seed}: {how} -> {out_dir}")
         try:
             train_model(spec, build_arg_parser(spec).parse_args(cli), shared_outputs=False)
             predictor = TransformerPredictor(str(out_dir))
@@ -255,7 +312,9 @@ def run_transformer(model_type, seeds, test_df, categories, latency_texts, args)
                 break
             continue
         metrics = evaluate_predictor(predictor, test_df, categories)
-        runs.append({"seed": seed, "status": "ok", "weights": out_dir.relative_to(ROOT).as_posix(), **metrics})
+        runs.append({"seed": seed, "status": "ok", "weights": out_dir.relative_to(ROOT).as_posix(),
+                     "how": how, "how_reason": why if how == "trained" else "unfinished run continued from its checkpoint",
+                     **metrics})
         if latency is None:
             latency = measure_latency(predictor, latency_texts)
     return {"runs": runs, "latency": latency}
@@ -525,6 +584,13 @@ def main(argv: list[str] | None = None) -> dict:
     parser.add_argument("--latency-samples", type=int, default=200)
     parser.add_argument("--protectai", action="store_true", help=f"Also evaluate {PROTECTAI_ID}.")
     parser.add_argument("--bootstrap", type=int, default=stats.N_BOOTSTRAP, help="Bootstrap resamples (default: 1000).")
+    parser.add_argument(
+        "--reuse-finished-seeds",
+        action="store_true",
+        help="Reuse bert/guard seeds in artifacts/paper_runs/ that already have metrics.json + weights and match the "
+             "current dataset revision, split sizes, max_length and epochs; resume unfinished seeds from their "
+             "checkpoints. Everything else is (re)trained. How each seed was produced is recorded.",
+    )
     args = parser.parse_args(argv)
 
     _, _, test_df, provenance = get_splits()
@@ -590,6 +656,11 @@ def main(argv: list[str] | None = None) -> dict:
         "environment": {**_environment(), "latency_machine": latency_bench.machine_info()},
         "models": model_results,
         "pairwise": pairwise,
+        "seed_provenance": {
+            m: [{"seed": r["seed"], "how": r.get("how", "trained"), "reason": r.get("how_reason")} for r in res["runs"]]
+            for m, res in model_results.items()
+            if m in ("bert", "guard")
+        },
     }
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
     RESULTS_PATH.write_text(json.dumps(results, indent=2), encoding="utf-8")
@@ -597,6 +668,9 @@ def main(argv: list[str] | None = None) -> dict:
 
     print("\n" + build_tables_text(results))
     print(f"Wrote {RESULTS_PATH.relative_to(ROOT)} and {len(written)} table files in {TABLES_DIR.relative_to(ROOT)}/")
+    for model_type, entries in results["seed_provenance"].items():
+        for e in entries:
+            print(f"  {model_type} seed {e['seed']}: {e['how']}")
     for model_type, result in model_results.items():
         s = result["summary"]
         if s["n_seeds_failed"]:
