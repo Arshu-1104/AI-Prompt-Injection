@@ -32,7 +32,6 @@ import os
 import platform
 import statistics
 import sys
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -42,6 +41,7 @@ import pandas as pd
 from src.metrics import LABELS, evaluate_split, labels_from_probs, wilson_interval
 from src.preprocess import clean_text, get_splits
 from src.robustness import ADVERSARIAL_PROMPTS, LOW_CONFIDENCE_N
+from src import latency as latency_bench
 from src import stats
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -196,18 +196,9 @@ def evaluate_predictor(predictor, test_df: pd.DataFrame, categories: pd.Series) 
 
 
 def measure_latency(predictor, texts: list[str]) -> dict:
-    for text in texts[:WARMUP_CALLS]:
-        predictor.predict([text])
-    timings = []
-    for text in texts:
-        t0 = time.perf_counter()
-        predictor.predict([text])
-        timings.append((time.perf_counter() - t0) * 1000)
-    return {
-        "n": len(timings),
-        "mean_ms": float(statistics.fmean(timings)),
-        "p95_ms": float(np.percentile(timings, 95)),
-    }
+    """CPU ms per prompt at batch size 1 and 16 (median, p95); mean_ms = batch-1 mean."""
+    bench = latency_bench.benchmark(predictor.predict, texts)
+    return {"mean_ms": bench["batch_1"]["mean_ms_per_prompt"], **bench}
 
 
 # --------------------------------------------------------------------------- per-model runs
@@ -369,7 +360,7 @@ def build_tables(results: dict) -> dict[str, tuple[list[str], list[list[str]], s
     tables = {}
     spread = seed_spread("binary", "accuracy")
     tables["binary_headline"] = (
-        ["model", "seeds", "accuracy", "F1 (MALICIOUS)", "false-positive rate", "ECE", "accuracy over seeds", "CPU latency (ms)"],
+        ["model", "seeds", "accuracy", "F1 (MALICIOUS)", "false-positive rate", "ECE", "accuracy over seeds", "CPU ms/prompt (median, bs=1)"],
         [
             [
                 DISPLAY_NAMES[m],
@@ -379,7 +370,7 @@ def build_tables(results: dict) -> dict[str, tuple[list[str], list[list[str]], s
                 stats.fmt_ci(boot[m]["binary"]["false_positive_rate"] if boot[m] else None),
                 stats.fmt_ci(boot[m]["binary"]["ece"] if boot[m] else None),
                 spread[i],
-                f"{lat[m]['mean_ms']:.2f}" if lat[m] else "-",
+                f"{lat[m]['batch_1']['median_ms_per_prompt']:.2f}" if lat[m] and "batch_1" in lat[m] else "-",
             ]
             for i, m in enumerate(models)
         ],
@@ -388,6 +379,20 @@ def build_tables(results: dict) -> dict[str, tuple[list[str], list[list[str]], s
         "Latency: mean single-prompt CPU inference.",
     )
     spread = seed_spread("three_class", "f1_weighted")
+    machine = results.get("environment", {}).get("latency_machine", {})
+    tables["cpu_latency"] = (
+        ["model", "bs=1 median", "bs=1 p95", "bs=16 median", "bs=16 p95"],
+        [
+            [DISPLAY_NAMES[m]] + (
+                [f"{lat[m][f'batch_{bs}'][k]:.2f}" for bs in (1, 16) for k in ("median_ms_per_prompt", "p95_ms_per_prompt")]
+                if lat[m] and "batch_16" in lat[m] else ["-"] * 4
+            )
+            for m in models
+        ],
+        f"CPU milliseconds per prompt on {machine.get('cpu_model', 'this machine')} "
+        f"({machine.get('torch_threads', '?')} torch threads, {machine.get('logical_cpus', '?')} logical CPUs). "
+        "Compare only numbers measured on the same machine.",
+    )
     tables["three_class"] = (
         ["model", "seeds", "accuracy", "weighted F1", "ECE", "weighted F1 over seeds"],
         [
@@ -575,7 +580,7 @@ def main(argv: list[str] | None = None) -> dict:
             "min_category_rows": MIN_CATEGORY_ROWS,
             "smoke_run": bool(args.max_samples),
         },
-        "environment": _environment(),
+        "environment": {**_environment(), "latency_machine": latency_bench.machine_info()},
         "models": model_results,
         "pairwise": pairwise,
     }

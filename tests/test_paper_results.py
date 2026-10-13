@@ -72,7 +72,7 @@ def _run(accuracy: float) -> dict:
 
 
 def test_aggregate_ignores_failed_runs_and_tables_render():
-    result = {"runs": [_run(0.9), _run(0.8), {"status": "failed", "reason": "x"}], "latency": {"mean_ms": 1.5}}
+    result = {"runs": [_run(0.9), _run(0.8), {"status": "failed", "reason": "x"}], "latency": {"mean_ms": 1.5, "batch_1": {"median_ms_per_prompt": 1.4, "p95_ms_per_prompt": 2.0, "mean_ms_per_prompt": 1.5, "calls": 3}, "batch_16": {"median_ms_per_prompt": 0.2, "p95_ms_per_prompt": 0.3, "mean_ms_per_prompt": 0.2, "calls": 2}}}
     summary = pr.aggregate(result)
     assert summary["n_seeds_ok"] == 2 and summary["n_seeds_failed"] == 1
     assert summary["three_class"]["accuracy"]["mean"] == pytest.approx(0.85)
@@ -106,3 +106,15 @@ def test_bootstrap_and_pairwise_tables_render():
     assert len(rows) == 2 and "McNemar p" in columns
     headline = tables["binary_headline"][1][0]
     assert "[" in headline[2]  # bootstrap CI rendered
+
+
+def test_latency_benchmark_shapes():
+    from src import latency
+
+    calls = []
+    out = latency.benchmark(lambda batch: calls.append(len(batch)), [f"t{i}" for i in range(40)])
+    assert set(out) == {"batch_1", "batch_16"}
+    assert out["batch_16"]["calls"] == 2 and out["batch_1"]["calls"] == 40
+    assert out["batch_1"]["p95_ms_per_prompt"] >= out["batch_1"]["median_ms_per_prompt"] >= 0
+    info = latency.machine_info()
+    assert info["cpu_model"] and info["logical_cpus"]
