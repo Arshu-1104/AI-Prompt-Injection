@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import PlainTextResponse
 
-from api.auth import generate_api_key, get_current_api_key, hash_input, hash_key, require_admin
+from api.auth import generate_api_key, get_current_api_key, hash_input, hash_key, key_prefix, require_admin
 from api.database import ApiKey, AsyncSessionLocal, Base, Prediction, engine, get_db
 from src.predict import PromptAnalyzer
 from src.preprocess import ATTACK_PATTERNS
@@ -272,6 +272,7 @@ async def create_api_key(payload: CreateKeyRequest, db: AsyncSession = Depends(g
     raw = generate_api_key()
     key = ApiKey(
         key_hash=hash_key(raw),
+        key_prefix=key_prefix(raw),
         org_name=payload.org_name,
         rate_limit_per_minute=payload.rate_limit_per_minute,
     )
@@ -288,6 +289,7 @@ async def list_api_keys(db: AsyncSession = Depends(get_db)) -> list[dict]:
         {
             "id": str(key.id),
             "org_name": key.org_name,
+            "key_prefix": key.key_prefix,
             "created_at": key.created_at.isoformat(),
             "rate_limit_per_minute": key.rate_limit_per_minute,
             "is_active": key.is_active,

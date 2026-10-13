@@ -53,6 +53,9 @@ class ApiKey(Base):
     __tablename__ = "api_keys"
     id: Mapped[str] = _uuid_col(primary_key=True)
     key_hash: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    # Non-secret lookup prefix of the raw key (see api.auth.KEY_PREFIX_LENGTH);
+    # NULL for keys created before migration 0002.
+    key_prefix: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
     org_name: Mapped[str] = mapped_column(String(200), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     rate_limit_per_minute: Mapped[int] = mapped_column(Integer, default=60)
