@@ -14,10 +14,10 @@
 
 ## What is PromptGuard?
 
-PromptGuard is a production-ready ML/NLP security system that detects prompt injection attempts in LLM inputs and classifies each prompt as `SAFE`, `SUSPICIOUS`, or `MALICIOUS` with confidence scores, risk scoring, matched attack patterns, and explainability outputs.
+PromptGuard is an ML/NLP security system that detects prompt injection attempts in LLM inputs and classifies each prompt as `SAFE`, `SUSPICIOUS`, or `MALICIOUS` with confidence scores, risk scoring, matched attack patterns, and explainability outputs.
 
 **Built with:**
-- FastAPI backend with PostgreSQL, async SQLAlchemy, JWT auth, rate limiting
+- FastAPI backend with PostgreSQL, async SQLAlchemy, bcrypt-hashed API keys, per-key rate limiting
 - Next.js 15 admin dashboard with real-time charts and logs
 - Chrome MV3 extension with live threat badge on any AI chat interface
 - Three ML models: TF-IDF + sklearn, DistilBERT, ModernBERT
@@ -72,7 +72,7 @@ Input Prompt -------->| preprocess.py       |
 
 - Source: HuggingFace `neuralchemy/Prompt-injection-dataset`
 - Base labels mapped to: `SAFE`, `MALICIOUS`
-- Synthetic middle class created: `SUSPICIOUS` (~15% of SAFE prompts modified with subtle manipulation phrases)
+- Synthetic middle class created: `SUSPICIOUS` (~35% of SAFE prompts modified with subtle manipulation phrases)
 - Hand-authored suspicious samples covering roleplay setups, authority impersonation, context-switching attacks
 - Benign hard negatives to reduce false positives
 - Output file: `data/processed_dataset.csv`
@@ -86,7 +86,7 @@ Input Prompt -------->| preprocess.py       |
 |---|---|---|---|
 | Classical ML | TF-IDF + Logistic/RF/NB | Fast training/inference, interpretable | Weaker on long contextual attacks |
 | BERT | DistilBERT fine-tuning | Better semantic detection | Higher compute cost |
-| Guard | ModernBERT fine-tuning | Best nuanced pattern detection | Largest model size |
+| Guard | ModernBERT fine-tuning | Newest encoder, longest context | Largest model size; needs 2 GB+ RAM to serve |
 
 Final scores are produced in `artifacts/metrics.json` and plots in `artifacts/figures/`.
 
@@ -113,6 +113,10 @@ AI-Prompt-Injection/
 │   ├── train_classical.py
 │   ├── train_bert.py
 │   ├── train_guard_model.py
+│   ├── transformer_training.py  # shared bert/guard fine-tuning loop
+│   ├── model_sources.py         # BERT_MODEL_ID / GUARD_MODEL_ID resolution
+│   ├── metrics.py
+│   ├── sanity_prompts.py
 │   ├── predict.py
 │   ├── evaluate.py
 │   ├── explain.py
@@ -120,8 +124,11 @@ AI-Prompt-Injection/
 ├── app/                    # Streamlit UI (optional)
 ├── docker-compose.yml
 ├── Dockerfile.backend
-├── requirements.txt
+├── requirements.txt        # training (includes torch/transformers)
+├── requirements-render.txt # API, classical model only
+├── requirements-heavy.txt  # adds torch/transformers to the API
 ├── alembic.ini
+├── paper_results.py
 └── run_pipeline.py
 ```
 
@@ -171,10 +178,12 @@ python paper_results.py         # same table as Markdown/LaTeX in artifacts/pape
 python -m src.explain
 python -m src.robustness
 
-# 3. Start API
-DATABASE_URL=postgresql+asyncpg://postgres:yourpassword@localhost/promptguard \
-ADMIN_SECRET_KEY=yourkey \
-uvicorn api.main:app --reload --port 8000
+# 3. Start API (without DATABASE_URL it uses SQLite at artifacts/promptguard.db)
+export DATABASE_URL=postgresql+asyncpg://postgres:yourpassword@localhost/promptguard
+alembic upgrade head
+ADMIN_SECRET_KEY=yourkey uvicorn api.main:app --reload --port 8000
+# Browsers calling the API directly from another origin need
+# CORS_ALLOW_ORIGINS=https://your.site (default: no cross-origin access).
 
 # 4. Start Dashboard
 cd dashboard

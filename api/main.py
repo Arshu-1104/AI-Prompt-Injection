@@ -23,7 +23,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import PlainTextResponse
 
 from api.auth import generate_api_key, get_current_api_key, hash_input, hash_key, key_prefix, require_admin
-from api.database import ApiKey, AsyncSessionLocal, Base, Prediction, engine, get_db
+from api.database import ApiKey, AsyncSessionLocal, Base, Prediction, engine, get_db, utcnow_naive
 from src.predict import PromptAnalyzer
 from src.preprocess import ATTACK_PATTERNS
 
@@ -142,11 +142,16 @@ limiter = Limiter(key_func=_key_func)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, lambda request, exc: PlainTextResponse("Rate limit exceeded", status_code=429))
 app.add_middleware(SlowAPIMiddleware)
+# Browser origins allowed to call the API directly, comma-separated (e.g.
+# "https://app.example.com"); "*" allows any. Default: none. First-party clients
+# don't need CORS: the dashboard calls the API server-side through /api/proxy,
+# and the extension calls it from its background worker under host_permissions.
+CORS_ALLOW_ORIGINS = [o.strip() for o in os.environ.get("CORS_ALLOW_ORIGINS", "").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    # The API is bearer-token based, so credentialed wildcard CORS is both
-    # unnecessary and invalid in browsers.
+    allow_origins=CORS_ALLOW_ORIGINS,
+    # The API is bearer-token based, so credentialed CORS is unnecessary (and
+    # invalid with a wildcard origin).
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -351,7 +356,7 @@ async def stats(
     api_key: ApiKey = Depends(get_current_api_key),
 ) -> dict:
     from api.database import _dialect
-    start = datetime.utcnow() - timedelta(days=days)
+    start = utcnow_naive() - timedelta(days=days)
 
     if _dialect == "postgresql":
         from sqlalchemy import cast, Date
@@ -382,7 +387,7 @@ async def stats(
     # Pre-fill every day in the requested range with zeros
     daily_map: dict[str, dict[str, int | str]] = {}
     for i in range(days):
-        day = (datetime.utcnow() - timedelta(days=days - i - 1)).date().isoformat()
+        day = (utcnow_naive() - timedelta(days=days - i - 1)).date().isoformat()
         daily_map[day] = {"date": day, "SAFE": 0, "SUSPICIOUS": 0, "MALICIOUS": 0}
 
     # Merge database counts into the pre-filled map
