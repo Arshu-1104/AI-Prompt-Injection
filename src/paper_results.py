@@ -42,6 +42,7 @@ import pandas as pd
 from src.metrics import LABELS, evaluate_split, labels_from_probs, wilson_interval
 from src.preprocess import clean_text, get_splits
 from src.robustness import ADVERSARIAL_PROMPTS, LOW_CONFIDENCE_N
+from src import stats
 
 ROOT = Path(__file__).resolve().parents[1]
 ARTIFACTS_DIR = ROOT / "artifacts"
@@ -159,6 +160,7 @@ def _category_frame(test_df: pd.DataFrame) -> pd.Series:
 def evaluate_predictor(predictor, test_df: pd.DataFrame, categories: pd.Series) -> dict:
     probs = predictor.predict(test_df["text"].tolist())
     result = evaluate_split(test_df, probs)  # {"three_class": ..., "binary": ...}
+    result["_probs"] = probs  # dropped before writing JSON; used for bootstrap / paired tests
     y_pred = labels_from_probs(probs)
 
     correct = pd.Series(
@@ -220,7 +222,7 @@ def run_classical(seeds, test_df, categories, latency_texts) -> dict:
 
     runs, latency = [], None
     for seed in seeds:
-        print(f"[classical] seed {seed}: fitting (5-fold CV model selection) ...")
+        print(f"[classical] seed {seed}: fitting (candidates selected on the validation split) ...")
         fitted = fit_classical(random_state=seed)
         predictor = ClassicalPredictor(fitted["pipeline"])
         metrics = evaluate_predictor(predictor, test_df, categories)
@@ -355,43 +357,84 @@ def build_tables(results: dict) -> dict[str, tuple[list[str], list[list[str]], s
     summ = {m: results["models"][m]["summary"] for m in models}
     lat = {m: results["models"][m].get("latency") for m in models}
     seeds_note = "mean ± std [95% t-CI] over seeds; '-' std when one seed"
+    boot = {m: results["models"][m].get("bootstrap") for m in models}
+    n_boot = next((b["n_bootstrap"] for b in boot.values() if b), stats.N_BOOTSTRAP)
+    boot_note = (
+        f"Point estimate [percentile 95% CI from {n_boot} bootstrap resamples of the fixed test split] for the "
+        "reference run (first successful seed)"
+    )
+
+    def seed_spread(view: str, metric: str) -> list[str]:
+        return [fmt_stat(summ[m][view][metric]) if summ[m]["n_seeds_ok"] > 1 else "-" for m in models]
+
     tables = {}
+    spread = seed_spread("binary", "accuracy")
     tables["binary_headline"] = (
-        ["model", "seeds", "accuracy", "F1 (MALICIOUS)", "false-positive rate", "ECE", "CPU latency (ms)"],
+        ["model", "seeds", "accuracy", "F1 (MALICIOUS)", "false-positive rate", "ECE", "accuracy over seeds", "CPU latency (ms)"],
         [
             [
                 DISPLAY_NAMES[m],
                 str(summ[m]["n_seeds_ok"]),
-                fmt_stat(summ[m]["binary"]["accuracy"]),
-                fmt_stat(summ[m]["binary"]["f1"]),
-                fmt_stat(summ[m]["binary"]["false_positive_rate"]),
-                fmt_stat(summ[m]["binary"]["ece"]),
+                stats.fmt_ci(boot[m]["binary"]["accuracy"] if boot[m] else None),
+                stats.fmt_ci(boot[m]["binary"]["f1"] if boot[m] else None),
+                stats.fmt_ci(boot[m]["binary"]["false_positive_rate"] if boot[m] else None),
+                stats.fmt_ci(boot[m]["binary"]["ece"] if boot[m] else None),
+                spread[i],
                 f"{lat[m]['mean_ms']:.2f}" if lat[m] else "-",
             ]
-            for m in models
+            for i, m in enumerate(models)
         ],
         "SAFE vs MALICIOUS on the original Hub test rows (official test split, Hub labels; prediction = MALICIOUS "
-        f"unless the model says SAFE). Headline metric; {seeds_note}. Latency: mean single-prompt CPU inference.",
+        f"unless the model says SAFE). Headline metric. {boot_note}; 'over seeds': {seeds_note}. "
+        "Latency: mean single-prompt CPU inference.",
     )
+    spread = seed_spread("three_class", "f1_weighted")
     tables["three_class"] = (
-        ["model", "seeds", "accuracy", "weighted F1", "ECE"],
+        ["model", "seeds", "accuracy", "weighted F1", "ECE", "weighted F1 over seeds"],
         [
             [
                 DISPLAY_NAMES[m],
                 str(summ[m]["n_seeds_ok"]),
-                fmt_stat(summ[m]["three_class"]["accuracy"]),
-                fmt_stat(summ[m]["three_class"]["f1_weighted"]),
-                fmt_stat(summ[m]["three_class"]["ece"]),
+                stats.fmt_ci(boot[m]["three_class"]["accuracy"] if boot[m] else None),
+                stats.fmt_ci(boot[m]["three_class"]["f1_weighted"] if boot[m] else None),
+                stats.fmt_ci(boot[m]["three_class"]["ece"] if boot[m] else None),
+                spread[i],
             ]
-            for m in models
+            for i, m in enumerate(models)
         ],
         "3-class (SAFE / SUSPICIOUS / MALICIOUS) on all test rows. SUSPICIOUS is synthetic (derived within the "
-        f"test split); the 2-class baseline cannot predict it. {seeds_note}.",
+        f"test split); the 2-class baseline cannot predict it. {boot_note}; 'over seeds': {seeds_note}.",
     )
     tables["per_class_f1"] = (
         ["model"] + [f"F1 {label}" for label in LABELS],
-        [[DISPLAY_NAMES[m]] + [fmt_stat(summ[m]["three_class"]["per_class_f1"][label]) for label in LABELS] for m in models],
-        f"Per-class F1 on the test split (SUSPICIOUS is synthetic); {seeds_note}.",
+        [
+            [DISPLAY_NAMES[m]] + [stats.fmt_ci(boot[m]["three_class"][f"f1_{label}"] if boot[m] else None) for label in LABELS]
+            for m in models
+        ],
+        f"Per-class F1 on the test split (SUSPICIOUS is synthetic). {boot_note}.",
+    )
+    pair_rows = []
+    for pair in results.get("pairwise", []):
+        for view in ("binary", "three_class"):
+            v = pair[view]
+            lo, hi = v["paired_bootstrap_ci95"]
+            mc = v["mcnemar"]
+            pair_rows.append(
+                [
+                    f"{DISPLAY_NAMES[pair['a']]} vs {DISPLAY_NAMES[pair['b']]}",
+                    "binary" if view == "binary" else "3-class",
+                    f"{v['accuracy_a']:.4f}",
+                    f"{v['accuracy_b']:.4f}",
+                    f"{v['difference']:+.4f} [{lo:+.4f}, {hi:+.4f}]",
+                    f"{mc['a_only_correct']} / {mc['b_only_correct']}",
+                    f"{mc['p_value']:.3g}",
+                ]
+            )
+    tables["pairwise_tests"] = (
+        ["comparison", "view", "acc A", "acc B", "A - B [paired bootstrap 95% CI]", "only A / only B correct", "McNemar p"],
+        pair_rows,
+        f"Paired comparisons on identical test rows (reference runs): exact two-sided McNemar test and paired bootstrap "
+        f"({n_boot} resamples) of the accuracy difference.",
     )
     for key, name, caption in (
         ("adversarial_categories", "robustness_by_category",
@@ -470,6 +513,7 @@ def main(argv: list[str] | None = None) -> dict:
     parser.add_argument("--max-samples", type=int, default=None, help="Smoke run: cap transformer train/test rows.")
     parser.add_argument("--latency-samples", type=int, default=200)
     parser.add_argument("--protectai", action="store_true", help=f"Also evaluate {PROTECTAI_ID}.")
+    parser.add_argument("--bootstrap", type=int, default=stats.N_BOOTSTRAP, help="Bootstrap resamples (default: 1000).")
     args = parser.parse_args(argv)
 
     _, _, test_df, provenance = get_splits()
@@ -496,6 +540,28 @@ def main(argv: list[str] | None = None) -> dict:
         result["summary"] = aggregate(result)
         model_results["protectai"] = result
 
+    reference: dict[str, stats.Evaluated] = {}
+    for model_type, result in model_results.items():
+        ok = [r for r in result["runs"] if r["status"] == "ok"]
+        if ok:
+            reference[model_type] = stats.Evaluated(test_df["label"].tolist(), test_df["derivation"].tolist(), ok[0]["_probs"])
+            result["bootstrap_reference_seed"] = ok[0]["seed"]
+    idx3, idxb = stats.resample_indices(
+        len(test_df), int((test_df["derivation"] == "original").sum()), n_boot=args.bootstrap, seed=0
+    )
+    for model_type, ev in reference.items():
+        print(f"[{model_type}] bootstrap ({args.bootstrap} resamples) ...")
+        model_results[model_type]["bootstrap"] = stats.bootstrap_ci(ev, idx3, idxb)
+    names = list(reference)
+    pairwise = [
+        {"a": a, "b": b, **stats.paired_comparison(reference[a], reference[b], idx3, idxb)}
+        for i, a in enumerate(names)
+        for b in names[i + 1 :]
+    ]
+    for result in model_results.values():
+        for run in result["runs"]:
+            run.pop("_probs", None)
+
     results = {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "dataset": provenance,
@@ -503,12 +569,16 @@ def main(argv: list[str] | None = None) -> dict:
             **vars(args),
             "evaluation_device": "cpu",
             "inputs": "test texts are the clean_text-normalized dataset rows, as the API sees them",
-            "confidence_interval": "two-sided 95% Student-t over seeds",
+            "confidence_interval": (
+                "seeds: two-sided 95% Student-t; test-set uncertainty: percentile bootstrap over the fixed test split "
+                "(reference run); pairs: exact McNemar + paired bootstrap of the accuracy difference"
+            ),
             "min_category_rows": MIN_CATEGORY_ROWS,
             "smoke_run": bool(args.max_samples),
         },
         "environment": _environment(),
         "models": model_results,
+        "pairwise": pairwise,
     }
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
     RESULTS_PATH.write_text(json.dumps(results, indent=2), encoding="utf-8")

@@ -81,3 +81,28 @@ def test_aggregate_ignores_failed_runs_and_tables_render():
     columns, rows, _ = tables["robustness_by_category"]
     assert columns[:2] == ["category", "n"] and rows[0][0] == "jailbreak †"  # n < 20 flagged
     assert "\\pm" in pr.to_latex(*tables["binary_headline"][:2], "c", "tab:x")
+
+
+def test_bootstrap_and_pairwise_tables_render():
+    import numpy as np
+
+    from src import stats
+
+    labels = ["SAFE", "MALICIOUS", "SAFE", "MALICIOUS", "SUSPICIOUS"] * 20
+    derivation = ["original"] * 4 * 20 + ["synthetic_suspicious"] * 20
+    derivation = [("synthetic_suspicious" if lab == "SUSPICIOUS" else "original") for lab in labels]
+    rng = np.random.default_rng(0)
+    probs_a = rng.dirichlet([1, 1, 1], size=len(labels))
+    probs_b = rng.dirichlet([1, 1, 1], size=len(labels))
+    ev_a, ev_b = stats.Evaluated(labels, derivation, probs_a), stats.Evaluated(labels, derivation, probs_b)
+    idx3, idxb = stats.resample_indices(len(labels), int(ev_a.original.sum()), n_boot=50)
+    result = {"runs": [_run(0.9)], "latency": {"mean_ms": 1.0}}
+    models = {}
+    for name, ev in (("classical", ev_a), ("bert", ev_b)):
+        models[name] = {**result, "summary": pr.aggregate(result), "bootstrap": stats.bootstrap_ci(ev, idx3, idxb)}
+    pairwise = [{"a": "classical", "b": "bert", **stats.paired_comparison(ev_a, ev_b, idx3, idxb)}]
+    tables = pr.build_tables({"models": models, "pairwise": pairwise})
+    columns, rows, _ = tables["pairwise_tests"]
+    assert len(rows) == 2 and "McNemar p" in columns
+    headline = tables["binary_headline"][1][0]
+    assert "[" in headline[2]  # bootstrap CI rendered
