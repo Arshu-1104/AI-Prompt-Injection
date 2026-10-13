@@ -1,0 +1,3 @@
+# Test dependencies, on top of requirements.txt or requirements-render.txt.
+pytest>=8
+httpx>=0.27
