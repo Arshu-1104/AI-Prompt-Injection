@@ -178,11 +178,17 @@ def candidate_pipelines(random_state: int) -> dict[str, "Pipeline"]:
     return candidates
 
 
-def fit_classical(random_state: int = 42, allow_rule_based_fallback: bool = False) -> dict:
+def fit_classical(
+    random_state: int = 42,
+    allow_rule_based_fallback: bool = False,
+    extra_train: pd.DataFrame | None = None,
+) -> dict:
     """Fit candidates on the official train split, pick the best by weighted F1 on
     the official validation split, and report it on the test split. Saves nothing.
 
     *random_state* seeds the classifiers only; the splits are the Hub's own.
+    *extra_train* (columns text, label) is appended to the training data only - used
+    by the clearly separate multi-source experiment in src.external_diagnostics.
     Returns pipeline, best_name, validation (per candidate), test (3-class and
     binary, see src.metrics.evaluate_split) and dataset (provenance).
 
@@ -212,6 +218,9 @@ def fit_classical(random_state: int = 42, allow_rule_based_fallback: bool = Fals
     everyday = EVERYDAY_SAFE_EXAMPLES * 8
     x_train = pd.concat([train_df["text"], pd.Series(everyday)], ignore_index=True)
     y_train = pd.concat([train_df["label"], pd.Series(["SAFE"] * len(everyday))], ignore_index=True)
+    if extra_train is not None and len(extra_train):
+        x_train = pd.concat([x_train, extra_train["text"].reset_index(drop=True)], ignore_index=True)
+        y_train = pd.concat([y_train, extra_train["label"].reset_index(drop=True)], ignore_index=True)
 
     if SKLEARN_AVAILABLE:
         validation: dict[str, dict] = {}

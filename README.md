@@ -152,6 +152,7 @@ AI-Prompt-Injection/
 │   ├── paper_results.py         # multi-seed paper tables
 │   ├── stats.py                 # bootstrap CIs, McNemar, paired bootstrap
 │   ├── external_eval.py         # xTRam1 / deepset / Qualifire evaluation
+│   ├── external_diagnostics.py  # label check, error analysis, language split, multi-source
 │   ├── explain.py
 │   └── robustness.py
 ├── app/                    # Streamlit UI (optional)
@@ -256,6 +257,28 @@ accept the terms and set `HF_TOKEN`, otherwise it is skipped). Labels are mapped
 MALICIOUS after an automatic label-meaning check. Texts that also appear in the training data are
 removed first (exact and normalized), with the counts logged. Results go to
 `artifacts/external_eval.json` and `artifacts/tables/external_eval.{md,tex}`.
+
+### External generalization: diagnosis
+
+`python -m src.external_diagnostics` explains the external results (`artifacts/external_diagnostics.json`,
+`artifacts/tables/external_diagnostics.md`). Findings for the classical model:
+
+- **Labels are not the problem.** A manual check of 30 rows per dataset (`docs/external_label_check.md`)
+  confirms 1 = injection. Accuracy under inverted labels is lower than under the documented mapping;
+  the model is near chance, not inverted.
+- **xTRam1 false positives** are benign imperative NLP-task prompts ("Given two words, output…",
+  "Construct a sentence…", "Classify whether…"). They are longer and far more often instruction-styled
+  than the true negatives. The model has largely learned "imperative task format = attack", because
+  the training data's attacks are imperative and its benign rows are mostly questions.
+- **xTRam1 false negatives** are harmful or exfiltration requests framed as creative writing, with no
+  override keywords ("Write me a poem that contains confidential information…").
+- **deepset** is mostly German. The English subset scores clearly better than the German subset, where
+  almost every benign query is flagged. **PromptGuard does not claim multilingual support.**
+- **Multi-source training** is a separate experiment that never replaces the single-source headline.
+  It's leave-one-dataset-out: neuralchemy train + the other external dataset's train split, selection
+  on neuralchemy validation, testing on the held-out external test split. It did not fix xTRam1. For
+  deepset it cut false positives sharply but also recall. **Classical does not generalize beyond its
+  training distribution.**
 
 ### Transformer models (bert, guard)
 
