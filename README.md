@@ -114,7 +114,11 @@ Input Prompt -------->| preprocess.py       |
 | BERT | DistilBERT fine-tuning | Better semantic detection | Higher compute cost |
 | Guard | ModernBERT fine-tuning | Newest encoder, longest context | Largest model size; needs 2 GB+ RAM to serve |
 
-Final scores are produced in `artifacts/metrics.json` and plots in `artifacts/figures/`.
+Scores come only from code: `artifacts/metrics.json`, `artifacts/model_comparison.json`,
+`artifacts/paper_results.json`, `artifacts/external_eval.json`, `artifacts/robustness_report.json`
+and the tables in `artifacts/tables/`. Every file records the dataset name, revision, config, split
+sizes and license. bert and guard have not been trained yet (see Known Limitations), so only
+classical results exist on this branch.
 
 ---
 
@@ -146,6 +150,8 @@ AI-Prompt-Injection/
 │   ├── predict.py
 │   ├── evaluate.py
 │   ├── paper_results.py         # multi-seed paper tables
+│   ├── stats.py                 # bootstrap CIs, McNemar, paired bootstrap
+│   ├── external_eval.py         # xTRam1 / deepset / Qualifire evaluation
 │   ├── explain.py
 │   └── robustness.py
 ├── app/                    # Streamlit UI (optional)
@@ -221,21 +227,35 @@ npm ci && npm run dev
 
 ### Paper results
 
-`python -m src.paper_results` retrains every model per seed on the canonical split and
-evaluates on CPU. It writes `artifacts/paper_results.json` and Markdown/LaTeX tables to
-`artifacts/tables/`. Nothing is hardcoded.
+`python -m src.paper_results` retrains every model per seed on the official train split, selects on
+the validation split and evaluates on CPU on the official test split. It writes
+`artifacts/paper_results.json` and Markdown/LaTeX tables to `artifacts/tables/`. Nothing is hardcoded.
 
-- Metrics: accuracy, weighted F1, per-class F1 and ECE; SAFE-vs-attack accuracy/F1;
-  per-category robustness (the `src/robustness.py` adversarial suite and the dataset's own
-  categories); mean/p95 single-prompt CPU latency.
-- Seeds: 5 for classical and bert, `--guard-seeds N` for guard (default 1, recorded in the
-  JSON). Shown as mean ± std with a 95% Student-t interval.
-- `--protectai` adds `protectai/deberta-v3-base-prompt-injection-v2` as an untrained
-  baseline, with INJECTION mapped to MALICIOUS. Use the binary table to compare it.
-- `--max-samples 64 --epochs 1` gives a quick smoke run. Per-seed weights go to
-  `artifacts/paper_runs/`; `models/` is never touched.
-- Full bert/guard runs need torch and, realistically, a GPU: 5 DistilBERT seeds plus
-  ModernBERT take hours on CPU.
+- **Headline:** binary SAFE vs MALICIOUS on the original Hub test rows (accuracy, F1, false-positive
+  rate, ECE). 3-class results are reported separately, and SUSPICIOUS is synthetic.
+- **Uncertainty:**
+  - percentile bootstrap 95% CIs (1,000 resamples of the fixed test split) for every model;
+  - seed-to-seed mean ± std with a Student-t interval (5 seeds for classical and bert,
+    `--guard-seeds N` for guard, actual count recorded);
+  - exact McNemar tests and paired-bootstrap CIs of the accuracy difference for every model pair.
+  Classical has no seed variance (logistic regression doesn't depend on the seed), so the bootstrap
+  is its uncertainty estimate.
+- **Robustness:** per category of the `src/robustness.py` adversarial suite and of the dataset's
+  categories, with Wilson 95% intervals. Categories with n < 20 are marked low-confidence.
+- **Baseline:** `--protectai` adds `protectai/deberta-v3-base-prompt-injection-v2`, untrained, with
+  INJECTION mapped to MALICIOUS. Compare it on the binary table.
+- **Smoke runs:** `--max-samples 64 --epochs 1`. Per-seed weights go to `artifacts/paper_runs/`;
+  `models/` is never touched.
+
+### External evaluation
+
+`python -m src.external_eval [--protectai]` scores the trained models, without retraining, on
+`xTRam1/safe-guard-prompt-injection` (test; no license stated), `deepset/prompt-injections` (test;
+Apache-2.0, mostly German) and `qualifire/prompt-injections-benchmark` (test; CC-BY-NC-4.0, gated:
+accept the terms and set `HF_TOKEN`, otherwise it is skipped). Labels are mapped to SAFE vs
+MALICIOUS after an automatic label-meaning check. Texts that also appear in the training data are
+removed first (exact and normalized), with the counts logged. Results go to
+`artifacts/external_eval.json` and `artifacts/tables/external_eval.{md,tex}`.
 
 ### Transformer models (bert, guard)
 
@@ -293,6 +313,49 @@ options page let you pick `bert` / `guard` once the backend has them.
 **Memory.** Plan for roughly 1.5-3 GB RAM per worker with both models loaded (estimate, not
 measured). Render's free tier (512 MB) is too small; ModernBERT needs a 2 GB+ instance.
 `render.yaml` keeps heavy models off and documents how to enable them.
+
+---
+
+## Reproducing the results
+
+Part A runs anywhere (no torch needed):
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+python -m src.load_data                 # official splits @ pinned revision; --train-config core optional
+pytest -q                               # includes leakage checks on the built data
+python -m src.train_classical           # selection on validation, writes models/classical_model.pkl
+python -m src.evaluate --models classical
+python -m src.robustness
+python -m src.paper_results --models classical
+python -m src.external_eval
+```
+
+Part B needs torch, ideally on a GPU (Colab, Kaggle, or any Linux box):
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cu121   # or .../whl/cpu
+pip install -r requirements.txt -r requirements-dev.txt
+python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+python -m src.load_data
+# B1 smoke tests
+python -m src.train_bert --max-samples 64 --epochs 1 --batch-size 8
+python -m src.train_guard_model --max-samples 64 --epochs 1 --batch-size 8
+# B2 full training + upload (HF_TOKEN with write access); check each metrics.json and sanity_check
+export HF_TOKEN=hf_...
+python -m src.train_bert --epochs 3 --batch-size 16 --seed 42 --push-to-hub <user>/promptguard-bert
+python -m src.train_guard_model --epochs 3 --batch-size 16 --seed 42 --push-to-hub <user>/promptguard-guard
+# B3 paper results (bootstrap CIs and pairwise tests included)
+python -m src.paper_results --seeds 5 --guard-seeds 3 --protectai
+# B4 external evaluation
+BERT_MODEL_ID=<user>/promptguard-bert GUARD_MODEL_ID=<user>/promptguard-guard python -m src.external_eval --protectai
+# B5 heavy image (needs Docker); then measure memory with `docker stats`
+docker build -f Dockerfile.backend --build-arg INSTALL_HEAVY=1 -t promptguard-api:heavy .
+docker run -p 8000:8000 -e ENABLE_HEAVY_MODELS=true -e WEB_CONCURRENCY=1 -e ADMIN_SECRET_KEY=change-me \
+  -e BERT_MODEL_ID=<user>/promptguard-bert -e GUARD_MODEL_ID=<user>/promptguard-guard -e HF_TOKEN=$HF_TOKEN \
+  promptguard-api:heavy
+curl http://localhost:8000/health
+```
 
 ---
 
@@ -372,19 +435,44 @@ Features: model switcher, single prompt analysis, risk badge, confidence bar, pa
 
 ## Known Limitations
 
-1. **In-memory rate limit counters** — The `_RATE_WINDOW` dict resets when the API server restarts, allowing a brief burst above the configured limit after each deploy. Move counters to Redis or a PostgreSQL `rate_limits` table when stricter enforcement is needed.
-
-2. **Pattern counts in `/api/stats`** — Attack pattern aggregation still fetches pattern columns to Python for counting since JSON arrays cannot be aggregated in standard SQL. This is efficient at current scale but a materialized counter table would be cleaner at very high volume.
+1. **bert and guard are untrained.** They need a machine where torch runs; see
+   "Reproducing the results". There are no bert, guard or ProtectAI numbers yet.
+2. **Robustness gate not met.** The CI gate compares exact 3-class matches on the adversarial suite
+   against `ROBUSTNESS_BASELINE` (0.75). The validation-selected classical model is below it. Most
+   misses are SUSPICIOUS-vs-MALICIOUS disagreements on hand-labelled prompts; binary detection on
+   the same suite is much higher. The baseline is deliberately unchanged, pending a maintainer
+   decision (keep exact match, or gate on binary detection).
+3. **Synthetic SUSPICIOUS class.** It comes from appending a manipulation phrase to SAFE rows, which
+   is easy to detect (near-perfect SUSPICIOUS F1). That says little about real ambiguous prompts;
+   use the binary metrics for comparisons.
+4. **Weak out-of-distribution performance (classical).** On the external sets the classical model
+   flags a large share of benign prompts (`artifacts/external_eval.json`). deepset is mostly German,
+   which the English-trained model has not seen.
+5. **`clean_text` strips tag-shaped text.** Input like `<|im_start|>` becomes an empty string before
+   any model sees it, so special-token injection payloads are erased instead of detected.
+6. **Small robustness categories.** Many categories have n < 20, so their Wilson intervals are wide
+   and they are flagged low-confidence.
+7. **Dataset license caveat.** The card declares Apache-2.0 but lists WildGuard / JudgeComparison as
+   "Research" and HackAPrompt as CC BY 4.0. The Qualifire benchmark is CC-BY-NC-4.0.
+8. **Memory figures for heavy models are estimates**, not measurements, until the heavy Docker image
+   is run (step B5).
+9. **In-memory rate limit counters.** `_RATE_WINDOW` resets on restart, allowing a brief burst above
+   the limit after each deploy. Move counters to Redis or a Postgres table for stricter enforcement.
+10. **Pattern counts in `/api/stats`** are aggregated in Python, since JSON arrays can't be counted
+    in portable SQL. That's fine at current scale.
 
 ---
 
 ## Future Scope
 
-- SHAP and integrated gradients for deeper explainability
-- Real-time monitoring pipeline with alerting
-- Multilingual detection beyond English-centric patterns
-- Redis-backed rate limiting for stricter enforcement across restarts
-- Multi-tenant user registration for SaaS deployment
+- Train and publish bert/guard (Hub), then compare all models with the paired tests
+- A real (non-synthetic) SUSPICIOUS class, or a binary-only product mode
+- Better out-of-distribution generalization: train on more sources, hard negatives from the external
+  sets' domains (never their test splits), multilingual data
+- Detect special-token payloads instead of stripping them in `clean_text`
+- Grow every robustness category to n ≥ 20
+- SHAP / integrated gradients for explainability
+- Redis-backed rate limiting; multi-tenant registration
 
 ---
 
