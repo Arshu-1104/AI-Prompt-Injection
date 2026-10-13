@@ -259,8 +259,19 @@ measured). Render's free tier (512 MB) is too small; ModernBERT needs a 2 GB+ in
 curl http://127.0.0.1:8000/health
 # {"status":"ok","models_loaded":true,"heavy_models_enabled":false,
 #  "models":{"classical":{"available":true,"reason":null},
-#            "bert":{"available":false,"reason":"Heavy models disabled: ..."}, ...}, ...}
+#            "bert":{"available":false,"reason":"heavy_disabled"}, ...}, ...}
 ```
+
+`reason` is a short code; details (paths, exception text) go to the server log only.
+
+| reason | meaning |
+|---|---|
+| `heavy_disabled` | `ENABLE_HEAVY_MODELS` is not `true` |
+| `runtime_unavailable` | torch/transformers not installed or not importable |
+| `weights_missing` | no `BERT_MODEL_ID`/`GUARD_MODEL_ID` and no local weights |
+| `lfs_stub` | `models/<name>` holds Git LFS pointer files, not weights |
+| `download_failed` | Hub repo unreachable, missing, or token lacks access |
+| `load_failed` | anything else; see the server log |
 
 ### Single prediction
 ```bash

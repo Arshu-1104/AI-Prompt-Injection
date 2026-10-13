@@ -18,8 +18,32 @@ def test_health_reports_every_model(client):
     assert set(body["models"]) == {"classical", "bert", "guard"}
     assert body["models"]["classical"]["available"] is True
     for model in ("bert", "guard"):
-        assert body["models"][model]["available"] is False
-        assert body["models"][model]["reason"]
+        assert body["models"][model] == {"available": False, "reason": "heavy_disabled"}
+
+
+def test_health_reasons_hide_internals(client, monkeypatch):
+    import api.main as main
+    from src.model_sources import LfsStubError
+
+    def fail(*args, **kwargs):
+        raise LfsStubError(r"C:\secret\models\bert_model contains Git LFS pointer stubs")
+
+    def crash(*args, **kwargs):
+        raise ValueError("/srv/app/very/internal/path exploded")
+
+    monkeypatch.setattr(main, "PromptAnalyzer", fail)
+    main._load_analyzer(main.app, "bert")
+    monkeypatch.setattr(main, "PromptAnalyzer", crash)
+    main._load_analyzer(main.app, "guard")
+    try:
+        models = client.get("/health").json()["models"]
+        assert models["bert"]["reason"] == "lfs_stub"
+        assert models["guard"]["reason"] == "load_failed"
+        text = str(models)
+        assert "secret" not in text and "internal" not in text and "\\" not in text and "/" not in text
+    finally:
+        for model in ("bert", "guard"):
+            main.app.state.model_status[model] = {"available": False, "reason": "heavy_disabled"}
 
 
 def test_predict_classical(client, auth_headers):
@@ -36,7 +60,7 @@ def test_unavailable_model_returns_503_with_reason(client, auth_headers):
     for path, payload in (("/predict", {"text": ATTACK}), ("/batch_predict", {"texts": [ATTACK]})):
         response = client.post(path, json={**payload, "model": "guard"}, headers=auth_headers)
         assert response.status_code == 503
-        assert "guard" in response.json()["detail"]
+        assert response.json()["detail"] == "Model 'guard' is unavailable (heavy_disabled)."
 
 
 def test_batch_predict(client, auth_headers):

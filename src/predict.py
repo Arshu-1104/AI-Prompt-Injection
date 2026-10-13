@@ -15,7 +15,7 @@ except Exception as _exc:  # ImportError, or OSError when a native DLL is blocke
     BERT_RUNTIME_AVAILABLE = False
     BERT_RUNTIME_ERROR = f"torch/transformers not importable ({type(_exc).__name__}: {_exc})"
 
-from src.model_sources import resolve_model_source
+from src.model_sources import DownloadFailedError, RuntimeUnavailableError, resolve_model_source
 from src.preprocess import clean_text, highlight_attack_patterns
 from src.explain import _merge_subword_scores
 from src.train_classical import RuleBasedClassifier
@@ -28,10 +28,16 @@ MAX_LENGTH = 256
 def _load_transformer(model_type: str, device, **model_kwargs):
     """Load (tokenizer, model) for 'bert' or 'guard' from the Hub or models/."""
     if not BERT_RUNTIME_AVAILABLE:
-        raise RuntimeError(BERT_RUNTIME_ERROR)
+        raise RuntimeUnavailableError(BERT_RUNTIME_ERROR)
     source = resolve_model_source(model_type)
-    tokenizer = AutoTokenizer.from_pretrained(source)
-    model = AutoModelForSequenceClassification.from_pretrained(source, **model_kwargs)
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(source)
+        model = AutoModelForSequenceClassification.from_pretrained(source, **model_kwargs)
+    except OSError as exc:
+        if Path(source).is_dir():
+            raise
+        # Hub repo id: unreachable Hub, missing/private repo, or bad token.
+        raise DownloadFailedError(f"Could not fetch {source} from the Hugging Face Hub: {exc}") from exc
     model.to(device)
     model.eval()
     return tokenizer, model, source

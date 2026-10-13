@@ -71,8 +71,9 @@ def models_dir(tmp_path, monkeypatch):
 
 
 def test_missing_weights(models_dir):
-    with pytest.raises(ms.ModelSourceError, match="BERT_MODEL_ID"):
+    with pytest.raises(ms.ModelSourceError, match="BERT_MODEL_ID") as info:
         ms.resolve_model_source("bert")
+    assert info.value.code == "weights_missing"
 
 
 def test_lfs_stub_rejected(models_dir):
@@ -80,8 +81,9 @@ def test_lfs_stub_rejected(models_dir):
     d.mkdir()
     (d / "config.json").write_bytes(LFS_POINTER)
     (d / "model.safetensors").write_bytes(LFS_POINTER)
-    with pytest.raises(ms.ModelSourceError, match="LFS"):
+    with pytest.raises(ms.ModelSourceError, match="LFS") as info:
         ms.resolve_model_source("bert")
+    assert info.value.code == "lfs_stub"
 
 
 def test_real_local_weights(models_dir):

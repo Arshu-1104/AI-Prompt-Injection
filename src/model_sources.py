@@ -26,8 +26,35 @@ _LFS_POINTER_PREFIX = b"version https://git-lfs"
 _WEIGHT_FILES = ("model.safetensors", "pytorch_model.bin")
 
 
-class ModelSourceError(RuntimeError):
+class ModelUnavailableError(RuntimeError):
+    """A model cannot be loaded. ``code`` is a short, public reason code; the
+    message has details (paths, exception text) meant for server logs only."""
+
+    code = "load_failed"
+
+
+class ModelSourceError(ModelUnavailableError):
     """No usable weights for a transformer model."""
+
+    code = "weights_missing"
+
+
+class LfsStubError(ModelSourceError):
+    """models/<dir> holds Git LFS pointer files instead of weights."""
+
+    code = "lfs_stub"
+
+
+class RuntimeUnavailableError(ModelUnavailableError):
+    """torch/transformers cannot be imported."""
+
+    code = "runtime_unavailable"
+
+
+class DownloadFailedError(ModelUnavailableError):
+    """Weights could not be fetched from the Hugging Face Hub."""
+
+    code = "download_failed"
 
 
 def _is_lfs_pointer(path: Path) -> bool:
@@ -52,7 +79,7 @@ def resolve_model_source(model_type: str) -> str:
         raise ModelSourceError(f"No {model_type} weights: {local_dir} has no config.json. {hint}")
     weights = [local_dir / name for name in _WEIGHT_FILES if (local_dir / name).exists()]
     if _is_lfs_pointer(config) or any(_is_lfs_pointer(w) for w in weights):
-        raise ModelSourceError(
+        raise LfsStubError(
             f"{local_dir} contains Git LFS pointer stubs, not real weights. "
             f"Run `git lfs pull`, or {hint[0].lower()}{hint[1:]}"
         )

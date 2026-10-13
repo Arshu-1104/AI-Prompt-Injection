@@ -10,6 +10,16 @@ type Health = { models?: Record<string, ModelStatus> };
 
 const MODEL_IDS = ["classical", "bert", "guard"] as const;
 
+// Reason codes from GET /health; details are only in the backend logs.
+const REASON_TEXT: Record<string, string> = {
+  heavy_disabled: "Heavy models are disabled on the backend (ENABLE_HEAVY_MODELS).",
+  runtime_unavailable: "The backend has no torch/transformers installed.",
+  weights_missing: "No weights configured (BERT_MODEL_ID / GUARD_MODEL_ID).",
+  lfs_stub: "Only Git LFS pointer files are present, not real weights.",
+  download_failed: "Weights could not be downloaded from the Hugging Face Hub.",
+  load_failed: "The model failed to load; see the backend logs.",
+};
+
 export default function PlaygroundPage() {
   const [text, setText] = useState("");
   const [model, setModel] = useState("classical");
@@ -58,7 +68,7 @@ export default function PlaygroundPage() {
           const available = status?.available === true;
           const note = models === null ? " (checking...)" : available ? "" : " (unavailable)";
           return (
-            <label key={id} title={available ? undefined : status?.reason ?? undefined} className={`flex items-center gap-2 text-sm ${available ? "" : "text-slate-400"}`}>
+            <label key={id} title={available || !status?.reason ? undefined : REASON_TEXT[status.reason] ?? status.reason} className={`flex items-center gap-2 text-sm ${available ? "" : "text-slate-400"}`}>
               <input type="radio" checked={model === id} disabled={!available} onChange={() => available && setModel(id)} />
               {id}{note}
             </label>

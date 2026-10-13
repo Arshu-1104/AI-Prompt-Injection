@@ -24,6 +24,7 @@ from starlette.responses import PlainTextResponse
 
 from api.auth import generate_api_key, get_current_api_key, hash_input, hash_key, key_prefix, require_admin
 from api.database import ApiKey, AsyncSessionLocal, Base, Prediction, engine, get_db, utcnow_naive
+from src.model_sources import ModelUnavailableError
 from src.predict import PromptAnalyzer
 from src.preprocess import ATTACK_PATTERNS
 
@@ -83,17 +84,25 @@ def _heavy_models_enabled() -> bool:
     return os.environ.get("ENABLE_HEAVY_MODELS", "false").lower() == "true"
 
 
+# Public reason codes for an unavailable model (GET /health, 503 responses).
+# Details such as file paths and exception text are logged server-side only.
+REASON_HEAVY_DISABLED = "heavy_disabled"
+
+
 def _load_analyzer(app: FastAPI, model_type: str, **kwargs) -> None:
     t0 = time.monotonic()
     try:
         analyzer = PromptAnalyzer(model_type=model_type, **kwargs)
-    except Exception as exc:
-        reason = f"{type(exc).__name__}: {exc}"
-        app.state.model_status[model_type] = {"available": False, "reason": reason, "source": None}
-        logger.warning("Model '%s' failed to load: %s", model_type, reason)
+    except ModelUnavailableError as exc:
+        app.state.model_status[model_type] = {"available": False, "reason": exc.code}
+        logger.warning("Model '%s' unavailable (%s): %s", model_type, exc.code, exc)
+        return
+    except Exception:
+        app.state.model_status[model_type] = {"available": False, "reason": "load_failed"}
+        logger.exception("Model '%s' failed to load (load_failed)", model_type)
         return
     app.state.analyzers[model_type] = analyzer
-    app.state.model_status[model_type] = {"available": True, "reason": None, "source": analyzer.source}
+    app.state.model_status[model_type] = {"available": True, "reason": None}
     logger.info("Model '%s' loaded from %s in %.1fs", model_type, analyzer.source, time.monotonic() - t0)
 
 
@@ -109,9 +118,8 @@ async def lifespan(app: FastAPI):
         _load_analyzer(app, "bert")
         _load_analyzer(app, "guard")
     else:
-        reason = "Heavy models disabled: set ENABLE_HEAVY_MODELS=true (requires requirements-heavy.txt)."
         for model_type in ("bert", "guard"):
-            app.state.model_status[model_type] = {"available": False, "reason": reason, "source": None}
+            app.state.model_status[model_type] = {"available": False, "reason": REASON_HEAVY_DISABLED}
         logger.info("ENABLE_HEAVY_MODELS is not 'true'; skipping bert and guard.")
     # Classical escalates uncertain SUSPICIOUS results to guard, but only when guard is
     # already loaded (reusing it), so ENABLE_HEAVY_MODELS=false never loads ModernBERT.
@@ -224,8 +232,8 @@ def health() -> dict:
 def _get_analyzer(model_type: str) -> PromptAnalyzer:
     analyzer = app.state.analyzers.get(model_type)
     if analyzer is None:
-        reason = app.state.model_status.get(model_type, {}).get("reason") or "not loaded"
-        raise HTTPException(status_code=503, detail=f"Model '{model_type}' is unavailable: {reason}")
+        reason = app.state.model_status.get(model_type, {}).get("reason") or "load_failed"
+        raise HTTPException(status_code=503, detail=f"Model '{model_type}' is unavailable ({reason}).")
     return analyzer
 
 
