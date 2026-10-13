@@ -284,7 +284,10 @@ def _push_to_hub(spec: ModelSpec, args: argparse.Namespace, model, tokenizer, me
     print(f"Uploaded. Serve it with {env_var}={args.push_to_hub}")
 
 
-def train_model(spec: ModelSpec, args: argparse.Namespace) -> dict:
+def train_model(spec: ModelSpec, args: argparse.Namespace, shared_outputs: bool = True) -> dict:
+    """Fine-tune, evaluate, sanity-check and save. With shared_outputs=False
+    (multi-seed runs) metrics are written only into the output directory, never
+    to artifacts/<name>_metrics.json or artifacts/metrics.json."""
     smoke = bool(args.max_samples)
     if smoke and args.push_to_hub:
         raise TrainingError("--push-to-hub cannot be combined with --max-samples; smoke-test weights are not fit to serve.")
@@ -398,7 +401,9 @@ def train_model(spec: ModelSpec, args: argparse.Namespace) -> dict:
         f"ece={metrics['ece']:.4f} per_class_f1={ {k: round(v, 3) for k, v in metrics['per_class_f1'].items()} }"
     )
 
-    artifact_metrics_path = artifacts_dir / f"{spec.output_dirname}_metrics.json"
+    artifact_metrics_path = (
+        artifacts_dir / f"{spec.output_dirname}_metrics.json" if shared_outputs else output_dir / "metrics.json"
+    )
     if not sanity["passed"]:
         only = next(iter(sanity["prediction_counts"]))
         message = (
@@ -414,7 +419,7 @@ def train_model(spec: ModelSpec, args: argparse.Namespace) -> dict:
     tokenizer.save_pretrained(str(output_dir))
     _write_json(output_dir / "metrics.json", report)
     _write_json(artifact_metrics_path, report)
-    if not smoke:
+    if shared_outputs and not smoke:
         combined_path = artifacts_dir / "metrics.json"
         combined = json.loads(combined_path.read_text(encoding="utf-8")) if combined_path.exists() else {}
         combined[spec.output_dirname] = {k: v for k, v in report.items() if k != "sanity_check"}

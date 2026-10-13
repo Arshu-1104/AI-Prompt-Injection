@@ -125,6 +125,7 @@ AI-Prompt-Injection/
 │   ├── sanity_prompts.py
 │   ├── predict.py
 │   ├── evaluate.py
+│   ├── paper_results.py         # multi-seed paper tables
 │   ├── explain.py
 │   └── robustness.py
 ├── app/                    # Streamlit UI (optional)
@@ -134,7 +135,6 @@ AI-Prompt-Injection/
 ├── requirements-render.txt # API, classical model only
 ├── requirements-heavy.txt  # adds torch/transformers to the API
 ├── alembic.ini
-├── paper_results.py
 └── run_pipeline.py
 ```
 
@@ -180,7 +180,7 @@ python -m src.train_classical
 python -m src.train_bert
 python -m src.train_guard_model
 python -m src.evaluate          # compares all three models
-python paper_results.py         # same table as Markdown/LaTeX in artifacts/paper/
+python -m src.paper_results     # multi-seed paper tables (see below)
 python -m src.explain
 python -m src.robustness
 
@@ -198,6 +198,24 @@ npm ci && npm run dev
 ```
 
 ---
+
+### Paper results
+
+`python -m src.paper_results` retrains every model per seed on the canonical split and
+evaluates on CPU. It writes `artifacts/paper_results.json` and Markdown/LaTeX tables to
+`artifacts/tables/`. Nothing is hardcoded.
+
+- Metrics: accuracy, weighted F1, per-class F1 and ECE; SAFE-vs-attack accuracy/F1;
+  per-category robustness (the `src/robustness.py` adversarial suite and the dataset's own
+  categories); mean/p95 single-prompt CPU latency.
+- Seeds: 5 for classical and bert, `--guard-seeds N` for guard (default 1, recorded in the
+  JSON). Shown as mean ± std with a 95% Student-t interval.
+- `--protectai` adds `protectai/deberta-v3-base-prompt-injection-v2` as an untrained
+  baseline, with INJECTION mapped to MALICIOUS. Use the binary table to compare it.
+- `--max-samples 64 --epochs 1` gives a quick smoke run. Per-seed weights go to
+  `artifacts/paper_runs/`; `models/` is never touched.
+- Full bert/guard runs need torch and, realistically, a GPU: 5 DistilBERT seeds plus
+  ModernBERT take hours on CPU.
 
 ### Transformer models (bert, guard)
 
