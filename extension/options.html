@@ -12,6 +12,12 @@
     <option value="guard">guard (ModernBERT)</option>
   </select>
   <small>bert and guard only work if your backend has them loaded; check its /health.</small>
+  <div id="slowNote" hidden>
+    <p><strong>Slow model:</strong> bert and guard are transformer models and can take hundreds of
+    milliseconds to seconds per prompt on a CPU server, so the badge appears later than with classical.</p>
+    <label for="slowTimeout">Request timeout for bert / guard (seconds)</label>
+    <input type="number" id="slowTimeout" min="1" max="60" step="1">
+  </div>
   <button id="testBtn" type="button">Test Connection</button> <span id="testStatus"></span>
   <label class="row"><input type="checkbox" id="enabled"> Enabled</label>
   <button id="saveBtn" type="button">Save</button>

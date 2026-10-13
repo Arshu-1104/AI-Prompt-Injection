@@ -153,6 +153,7 @@ AI-Prompt-Injection/
 │   ├── stats.py                 # bootstrap CIs, McNemar, paired bootstrap
 │   ├── external_eval.py         # xTRam1 / deepset / Qualifire evaluation
 │   ├── external_diagnostics.py  # label check, error analysis, language split, multi-source
+│   ├── eval_only.py             # CPU evaluation of published weights (+ int8 Guard)
 │   ├── explain.py
 │   └── robustness.py
 ├── app/                    # Streamlit UI (optional)
@@ -166,6 +167,29 @@ AI-Prompt-Injection/
 ```
 
 ---
+
+## Who needs what
+
+| Task | Hardware |
+|---|---|
+| Use the API, dashboard and Chrome extension (classical model) | CPU only; the default Docker image has no torch |
+| Serve bert / guard from published weights | CPU is enough (heavy image, roughly 1.5-3 GB RAM, estimate) |
+| Reproduce the evaluation from published weights (`python -m src.eval_only`) | CPU only, no training code |
+| Train classical | CPU, under a minute |
+| **Train bert / guard** | **A GPU**, one time. Free Colab or Kaggle is enough. CPU works but is slow: about 20 min per DistilBERT epoch and about 50 min per ModernBERT epoch on the dev laptop (smoke-run throughput, extrapolated) |
+
+- Push trained weights to a **private** Hub repo (`--push-to-hub`; private is the default) until a
+  release decision is made.
+- Any model card must state the data licenses: neuralchemy is Apache-2.0 but includes a WildGuard /
+  JudgeComparison source labelled "Research" (and HackAPrompt, CC BY 4.0). xTRam1 states no license.
+  The Qualifire benchmark is CC-BY-NC-4.0 and gated, and must not be redistributed.
+- `python -m src.eval_only --bert-model-id <user>/promptguard-bert --guard-model-id <user>/promptguard-guard`
+  downloads the weights, evaluates on the official test split on CPU with progress output, and writes
+  the same metrics JSON as `src.evaluate`.
+- `--quantize-guard` adds dynamic int8 Guard (`torch.ao.quantization.quantize_dynamic` on the Linear
+  layers) and reports accuracy, latency and size before and after, so the cost is visible.
+- Extension: `classical` stays the default. For `bert` / `guard` the options page shows a "slow model"
+  note and a request timeout (default 10 s); classical keeps a 3 s timeout.
 
 ## How to Run
 

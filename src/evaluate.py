@@ -70,12 +70,23 @@ def _plot_reliability_diagram(bin_stats: list[dict], model_name: str, ece_value:
     plt.close(fig)
 
 
-def _evaluate_one(model_type: str, test_df: pd.DataFrame, device: str) -> tuple[dict, np.ndarray]:
+def _batched_proba(analyzer, texts: list[str], label: str, batch: int = 64) -> np.ndarray:
+    chunks = []
+    total = (len(texts) + batch - 1) // batch
+    for n, i in enumerate(range(0, len(texts), batch), start=1):
+        chunks.append(analyzer.predict_proba(texts[i : i + batch]))
+        if n == total or n % 5 == 0:
+            print(f"  [{label}] {min(i + batch, len(texts))}/{len(texts)} test rows", flush=True)
+    return np.concatenate(chunks)
+
+
+def _evaluate_one(model_type: str, test_df: pd.DataFrame, device: str, analyzer=None, label: str | None = None) -> tuple[dict, np.ndarray]:
     from src.predict import PromptAnalyzer
 
-    analyzer = PromptAnalyzer(model_type=model_type, device=device)
+    analyzer = analyzer or PromptAnalyzer(model_type=model_type, device=device)
+    label = label or model_type
     texts = test_df["text"].tolist()
-    probs = np.concatenate([analyzer.predict_proba(texts[i : i + 64]) for i in range(0, len(texts), 64)])
+    probs = _batched_proba(analyzer, texts, label)
 
     sample = texts[:LATENCY_SAMPLES]
     for text in sample[:WARMUP_CALLS]:
@@ -96,7 +107,7 @@ def _evaluate_one(model_type: str, test_df: pd.DataFrame, device: str) -> tuple[
     )
     summary.update(
         {
-            "model": model_type,
+            "model": label,
             "status": "ok",
             "source": analyzer.source,
             "device": device if model_type != "classical" else "cpu",

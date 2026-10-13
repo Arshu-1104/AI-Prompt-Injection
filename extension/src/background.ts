@@ -7,9 +7,12 @@ type MessageResponse =
   | { status: "timeout" }
   | { status: "error"; message: string };
 
-type StoredConfig = { endpoint?: string; apiKey?: string; enabled?: boolean; model?: string };
+type StoredConfig = { endpoint?: string; apiKey?: string; enabled?: boolean; model?: string; slowTimeoutSeconds?: number };
 
 const MODELS = ["classical", "bert", "guard"];
+const CLASSICAL_TIMEOUT_MS = 3000;
+// bert / guard are transformer models and much slower on a CPU server.
+const DEFAULT_SLOW_TIMEOUT_SECONDS = 10;
 
 function withTimeout(ms: number): { signal: AbortSignal; cancel: () => void } {
   const controller = new AbortController();
@@ -18,10 +21,11 @@ function withTimeout(ms: number): { signal: AbortSignal; cancel: () => void } {
 }
 
 async function handlePredict(text: string): Promise<MessageResponse> {
-  const config = await chrome.storage.sync.get({ enabled: true, endpoint: "", apiKey: "", model: "classical" }) as StoredConfig;
+  const config = await chrome.storage.sync.get({ enabled: true, endpoint: "", apiKey: "", model: "classical", slowTimeoutSeconds: DEFAULT_SLOW_TIMEOUT_SECONDS }) as StoredConfig;
   const model = MODELS.includes(config.model ?? "") ? config.model : "classical";
   if (config.enabled === false || !config.endpoint || !config.apiKey) return { status: "unconfigured" };
-  const timeout = withTimeout(3000);
+  const timeoutMs = model === "classical" ? CLASSICAL_TIMEOUT_MS : (config.slowTimeoutSeconds ?? DEFAULT_SLOW_TIMEOUT_SECONDS) * 1000;
+  const timeout = withTimeout(timeoutMs);
   try {
     const response = await fetch(`${config.endpoint.replace(/\/$/, "")}/predict`, {
       method: "POST",
