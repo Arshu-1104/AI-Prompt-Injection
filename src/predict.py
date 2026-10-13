@@ -16,7 +16,13 @@ except Exception as _exc:  # ImportError, or OSError when a native DLL is blocke
     BERT_RUNTIME_ERROR = f"torch/transformers not importable ({type(_exc).__name__}: {_exc})"
 
 from src.model_sources import DownloadFailedError, RuntimeUnavailableError, resolve_model_source
-from src.preprocess import clean_text, highlight_attack_patterns
+from src.preprocess import (
+    apply_rule_floor,
+    clean_text,
+    empty_after_cleaning_label,
+    highlight_attack_patterns,
+    rule_flags,
+)
 from src.explain import _merge_subword_scores
 from src.train_classical import RuleBasedClassifier
 
@@ -200,8 +206,14 @@ class PromptAnalyzer:
 
     def predict(self, text: str) -> dict:
         normalized = clean_text(text)
-        patterns = highlight_attack_patterns(normalized, already_clean=True)
-        if self.model_type == "classical":
+        # Patterns and rules see the raw text: cleaning strips tag-shaped payloads.
+        patterns = highlight_attack_patterns(normalized, already_clean=True, raw_text=text)
+        flags = rule_flags(text, normalized)
+        empty_input = not normalized.strip()
+        if empty_input:
+            # Nothing left for a model to judge; the rule layer decides.
+            label, confidence = empty_after_cleaning_label(flags), 1.0
+        elif self.model_type == "classical":
             label, confidence = self._predict_classical(normalized)
         elif self.model_type == "bert":
             label, confidence = self._predict_bert(normalized)
@@ -210,7 +222,8 @@ class PromptAnalyzer:
 
         escalated = False
         if (
-            self.escalate_on_uncertain
+            not empty_input
+            and self.escalate_on_uncertain
             and self.model_type == "classical"
             and label == "SUSPICIOUS"
             and confidence < 0.65
@@ -219,11 +232,25 @@ class PromptAnalyzer:
             label, confidence = self._predict_guard(normalized)
             escalated = True
 
-        token_highlights = self._get_token_importance(normalized) if self.model_type == "bert" else {}
+        label, raised_by_rule = apply_rule_floor(label, flags)
+
+        token_highlights = (
+            self._get_token_importance(normalized) if self.model_type == "bert" and not empty_input else {}
+        )
         base_risk = {"SAFE": 15.0, "SUSPICIOUS": 55.0, "MALICIOUS": 85.0}[label]
         pattern_boost = min(len(patterns) * 4.0, 15.0)
         risk_score = max(0.0, min(100.0, base_risk + pattern_boost + (confidence - 0.5) * 20))
         explanation = _explain_label(label, patterns, confidence)
+        if empty_input:
+            explanation += (
+                " No text is left after normalization, so no model was run; "
+                f"the label comes from the rule layer ({', '.join(flags) or 'no rule matched'})."
+            )
+        if raised_by_rule:
+            explanation += (
+                f" Raised from SAFE to SUSPICIOUS by the rule layer ({', '.join(flags)}); "
+                "confidence is the model's confidence in its own SAFE prediction."
+            )
         if self.is_rule_based_fallback:
             explanation += (
                 " WARNING: keyword-only fallback model active — "

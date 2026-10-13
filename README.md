@@ -448,8 +448,13 @@ Features: model switcher, single prompt analysis, risk badge, confidence bar, pa
 4. **Weak out-of-distribution performance (classical).** On the external sets the classical model
    flags a large share of benign prompts (`artifacts/external_eval.json`). deepset is mostly German,
    which the English-trained model has not seen.
-5. **`clean_text` strips tag-shaped text.** Input like `<|im_start|>` becomes an empty string before
-   any model sees it, so special-token injection payloads are erased instead of detected.
+5. **Tag-shaped payloads (fixed, with a trade-off).** `clean_text` strips tag-shaped text before
+   models see it. Attack patterns therefore also run on the raw text, chat-template / special-token
+   strings (`<|im_start|>`, `[INST]`, `<<SYS>>`, `</s>`, ...) are matched on the raw text and can't be
+   suppressed by the benign allowlist, and any such token lifts a SAFE prediction to SUSPICIOUS. If
+   nothing is left after cleaning, no model is run: the label is SUSPICIOUS when content was hidden
+   in tags and SAFE for whitespace. `src.evaluate` reports this full pipeline (`pipe_*`) next to the
+   model-only metrics.
 6. **Small robustness categories.** Many categories have n < 20, so their Wilson intervals are wide
    and they are flagged low-confidence.
 7. **Dataset license caveat.** The card declares Apache-2.0 but lists WildGuard / JudgeComparison as

@@ -19,7 +19,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from src.metrics import LABELS, compute_ece, evaluate_split, labels_from_probs
+from src.metrics import LABELS, compute_ece, evaluate_split, labels_from_probs, summarize_labels
+from src.preprocess import pipeline_labels
 from src.preprocess import get_splits
 
 try:
@@ -86,6 +87,13 @@ def _evaluate_one(model_type: str, test_df: pd.DataFrame, device: str) -> tuple[
         latencies_ms.append((time.perf_counter() - t0) * 1000)
 
     summary = evaluate_split(test_df, probs)
+    # What the API returns: model label, then the rule layer (raw text) and the
+    # empty-after-cleaning rule. Label-only, so no ECE.
+    pipeline = pipeline_labels(labels_from_probs(probs), test_df["raw_text"].tolist(), texts)
+    summary["pipeline_with_rules"] = summarize_labels(test_df, pipeline)
+    summary["pipeline_with_rules"]["rows_changed_by_rules"] = int(
+        sum(a != b for a, b in zip(pipeline, labels_from_probs(probs)))
+    )
     summary.update(
         {
             "model": model_type,
@@ -185,6 +193,9 @@ def comparison_table(rows: list[dict]) -> pd.DataFrame:
                 "3c_accuracy": round(t["accuracy"], 4),
                 "3c_f1_weighted": round(t["f1_weighted"], 4),
                 "3c_ece": round(t["ece"], 4),
+                "pipe_bin_accuracy": round(r["pipeline_with_rules"]["binary"]["accuracy"], 4),
+                "pipe_bin_fpr": None if r["pipeline_with_rules"]["binary"]["false_positive_rate"] is None
+                else round(r["pipeline_with_rules"]["binary"]["false_positive_rate"], 4),
                 "mean_latency_ms": round(r["mean_latency_ms"], 2),
                 "n_binary": b["n_samples"],
                 "n_3class": t["n_samples"],
@@ -196,6 +207,7 @@ def comparison_table(rows: list[dict]) -> pd.DataFrame:
 def print_comparison(rows: list[dict]) -> None:
     print("\nModel comparison on the official test split")
     print("  bin_* = SAFE vs MALICIOUS on original Hub rows (headline); 3c_* = 3-class incl. synthetic SUSPICIOUS")
+    print("  pipe_* = full API pipeline (model + rule layer), binary view")
     print(comparison_table(rows).to_string(index=False, na_rep="-"))
     for r in rows:
         if r["status"] != "ok":

@@ -26,7 +26,7 @@ from api.auth import generate_api_key, get_current_api_key, hash_input, hash_key
 from api.database import ApiKey, AsyncSessionLocal, Base, Prediction, engine, get_db, utcnow_naive
 from src.model_sources import ModelUnavailableError
 from src.predict import PromptAnalyzer
-from src.preprocess import ATTACK_PATTERNS
+from src.preprocess import ATTACK_PATTERNS, CHAT_TEMPLATE_PATTERNS
 
 
 class PredictRequest(BaseModel):
@@ -301,7 +301,7 @@ async def batch_predict(
 
 @app.get("/patterns")
 def patterns() -> dict:
-    return {"attack_patterns": ATTACK_PATTERNS}
+    return {"attack_patterns": ATTACK_PATTERNS + CHAT_TEMPLATE_PATTERNS}
 
 
 @app.post("/admin/api-keys", dependencies=[Depends(require_admin)])

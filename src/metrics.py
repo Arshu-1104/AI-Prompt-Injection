@@ -129,3 +129,27 @@ def wilson_interval(successes: int, n: int, z: float = 1.959963984540054) -> tup
     centre = (p + z * z / (2 * n)) / denom
     half = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / denom
     return max(0.0, centre - half), min(1.0, centre + half)
+
+
+def summarize_labels(df, y_pred: list[str]) -> dict:
+    """Label-only metrics (no ECE) for predictions that are not probabilities, e.g.
+    the API pipeline after the rule layer. Same two views as evaluate_split."""
+    from sklearn.metrics import accuracy_score, f1_score
+
+    y_true = df["label"].tolist()
+    original = (df["derivation"] == "original").to_numpy()
+    bin_true = [t for t, o in zip(y_true, original) if o]
+    bin_pred = ["SAFE" if p == "SAFE" else "MALICIOUS" for p, o in zip(y_pred, original) if o]
+    negatives = sum(t == "SAFE" for t in bin_true)
+    false_pos = sum(1 for t, p in zip(bin_true, bin_pred) if t == "SAFE" and p == "MALICIOUS")
+    return {
+        "three_class": {
+            "accuracy": float(accuracy_score(y_true, y_pred)),
+            "f1_weighted": float(f1_score(y_true, y_pred, labels=LABELS, average="weighted", zero_division=0)),
+        },
+        "binary": {
+            "accuracy": float(accuracy_score(bin_true, bin_pred)),
+            "f1": float(f1_score(bin_true, bin_pred, pos_label="MALICIOUS", zero_division=0)),
+            "false_positive_rate": float(false_pos / negatives) if negatives else None,
+        },
+    }
