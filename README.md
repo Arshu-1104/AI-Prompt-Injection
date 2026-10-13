@@ -280,7 +280,66 @@ Apache-2.0, mostly German) and `qualifire/prompt-injections-benchmark` (test; CC
 accept the terms and set `HF_TOKEN`, otherwise it is skipped). Labels are mapped to SAFE vs
 MALICIOUS after an automatic label-meaning check. Texts that also appear in the training data are
 removed first (exact and normalized), with the counts logged. Results go to
-`artifacts/external_eval.json` and `artifacts/tables/external_eval.{md,tex}`.
+`artifacts/external_eval.json`, `artifacts/tables/external_eval.{md,tex}` and
+`artifacts/tables/external_eval_thresholds.md`.
+
+Results (no retraining; `bert` and `guard` = seed-42 weights; Qualifire skipped, no `HF_TOKEN`; 0 rows
+removed as training overlap). Three views, kept apart:
+
+- **Fixed threshold** — the label the API returns (3-class argmax; SAFE vs not-SAFE). No tuning.
+- **AUROC** — threshold-free, on the score P(not-SAFE) = 1 − P(SAFE); percentile bootstrap 95% CI
+  (1,000 resamples of rows).
+- **Validation-tuned** — one threshold per model on P(not-SAFE), chosen to maximize binary accuracy
+  on the **neuralchemy validation split** (941 original rows), then applied unchanged to the external
+  data. **No external data is used for tuning.** Thresholds: classical 0.567, bert 0.500,
+  guard 0.749, ProtectAI 0.008.
+
+| dataset | model | n | fixed acc | fixed FPR | AUROC [95% CI] | validation-tuned acc | validation-tuned FPR |
+|---|---|---|---|---|---|---|---|
+| xTRam1 | classical | 2060 | 0.5437 | 0.6057 | 0.737 [0.715, 0.759] | 0.5587 | 0.5716 |
+| xTRam1 | bert | 2060 | 0.5442 | 0.5929 | 0.636 [0.613, 0.659] | 0.5393 | 0.6021 |
+| xTRam1 | guard | 2060 | 0.5398 | 0.6454 | 0.669 [0.644, 0.692] | 0.5670 | 0.5858 |
+| xTRam1 | ProtectAI | 2060 | 0.9607 | 0.0021 | 0.992 [0.988, 0.995] | 0.9733 | 0.0057 |
+| deepset | classical | 116 | 0.5517 | 0.6429 | 0.691 [0.589, 0.784] | 0.6121 | 0.4821 |
+| deepset | bert | 116 | 0.7328 | 0.3036 | 0.799 [0.714, 0.874] | 0.7328 | 0.3036 |
+| deepset | guard | 116 | 0.7586 | 0.3214 | 0.776 [0.685, 0.857] | 0.7500 | 0.3214 |
+| deepset | ProtectAI | 116 | 0.6983 | 0.0000 | 0.899 [0.834, 0.946] | 0.7414 | 0.0000 |
+| deepset, English subset | classical | 61 | 0.6721 | 0.2609 | 0.785 [0.667, 0.894] | 0.7213 | 0.0870 |
+| deepset, English subset | bert | 61 | 0.7869 | 0.0000 | 0.945 [0.873, 0.995] | 0.7869 | 0.0000 |
+| deepset, English subset | guard | 61 | 0.8197 | 0.0435 | 0.904 [0.819, 0.967] | 0.8033 | 0.0435 |
+| deepset, English subset | ProtectAI | 61 | 0.5902 | 0.0000 | 0.952 [0.894, 0.994] | 0.6393 | 0.0000 |
+
+Predicted-class distribution, fixed threshold (counts as SAFE / SUSPICIOUS / MALICIOUS):
+
+| dataset | model | true SAFE rows | true MALICIOUS rows |
+|---|---|---|---|
+| xTRam1 | classical | 556 / 2 / 852 | 86 / 11 / 553 |
+| xTRam1 | bert | 574 / 21 / 815 | 103 / 5 / 542 |
+| xTRam1 | guard | 500 / 6 / 904 | 38 / 3 / 609 |
+| deepset | classical | 20 / 0 / 36 | 16 / 0 / 44 |
+| deepset | bert | 39 / 0 / 17 | 14 / 0 / 46 |
+| deepset | guard | 38 / 0 / 18 | 10 / 0 / 50 |
+| deepset, English subset | classical | 17 / 0 / 6 | 14 / 0 / 24 |
+| deepset, English subset | bert | 23 / 0 / 0 | 13 / 0 / 25 |
+| deepset, English subset | guard | 22 / 0 / 1 | 10 / 0 / 28 |
+
+What this shows:
+
+- **xTRam1 is not a threshold problem.** About 60% of benign prompts are predicted MALICIOUS outright,
+  not SUSPICIOUS. The scores carry some ranking signal (AUROC 0.64–0.74), but a threshold chosen on
+  neuralchemy validation barely moves accuracy (≤ +0.03). Fine-tuned transformers rank xTRam1 *worse*
+  than classical. **None of the PromptGuard models generalizes to xTRam1.**
+- **deepset (English):** bert and guard separate the classes well (AUROC 0.95 and 0.90), but n = 61,
+  so the intervals are wide. The full deepset set is mostly German, where all PromptGuard models flag
+  most benign prompts.
+- **ProtectAI** ranks both sets best. Its validation-tuned threshold is very low (0.008), because its
+  scores sit close to 0 or 1. Its own training data may overlap with these public sets; we can't rule
+  that out.
+- The bert "fixed" and "tuned at 0.500" numbers differ slightly: the fixed view is the 3-class argmax,
+  while the tuned view thresholds P(not-SAFE). They disagree when no class has more than half the
+  probability.
+- The SUSPICIOUS class is almost never predicted on external data, so the binary view loses little by
+  merging it.
 
 ### External generalization: diagnosis
 
@@ -493,9 +552,11 @@ Features: model switcher, single prompt analysis, risk badge, confidence bar, pa
 3. **Synthetic SUSPICIOUS class.** It comes from appending a manipulation phrase to SAFE rows, which
    is easy to detect (near-perfect SUSPICIOUS F1). That says little about real ambiguous prompts;
    use the binary metrics for comparisons.
-4. **Weak out-of-distribution performance (classical).** On the external sets the classical model
-   flags a large share of benign prompts (`artifacts/external_eval.json`). deepset is mostly German,
-   which the English-trained model has not seen.
+4. **Weak out-of-distribution performance (all PromptGuard models).** On xTRam1 the classical, bert
+   and guard models all score about 0.54 accuracy and flag roughly 60% of benign prompts. A threshold
+   chosen on neuralchemy validation does not fix this (see External evaluation). deepset is mostly
+   German, which the English-trained models have not seen. Only the English subset of deepset (n = 61)
+   looks good for bert and guard.
 5. **Tag-shaped payloads (fixed, with a trade-off).** `clean_text` strips tag-shaped text before
    models see it. Attack patterns therefore also run on the raw text, chat-template / special-token
    strings (`<|im_start|>`, `[INST]`, `<<SYS>>`, `</s>`, ...) are matched on the raw text and can't be

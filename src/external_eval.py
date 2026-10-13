@@ -20,8 +20,14 @@ removed - exact matches and normalized matches (trimmed, lowercased,
 whitespace collapsed) - and the counts are logged per dataset.
 
 Reports accuracy, precision, recall, F1 (MALICIOUS), false-positive rate and
-ECE per model per dataset. Output: artifacts/external_eval.json and
-artifacts/tables/external_eval.{md,tex}.
+ECE per model per dataset (fixed threshold: the argmax label the API returns),
+plus, per model and per dataset (and the English subset of deepset):
+* the 3-class prediction distribution on true-SAFE and true-MALICIOUS rows;
+* binary AUROC of P(not-SAFE) with a bootstrap 95% CI (threshold-free);
+* metrics at the threshold that maximizes accuracy on the neuralchemy
+  VALIDATION split - chosen once per model, never on the external data.
+Output: artifacts/external_eval.json and artifacts/tables/external_eval.{md,tex},
+external_eval_thresholds.md.
 """
 from __future__ import annotations
 
@@ -35,7 +41,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from src.metrics import summarize_binary
+from src.metrics import LABELS, summarize_binary
 from src.preprocess import clean_text
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -168,6 +174,102 @@ def load_models(include_protectai: bool) -> tuple[dict, dict]:
     return models, skipped
 
 
+AUROC_BOOTSTRAP = 1000
+AUROC_SEED = 2026
+
+
+def attack_score(probs: np.ndarray) -> np.ndarray:
+    """P(not-SAFE) = 1 - P(SAFE): the binary score thresholded below."""
+    return 1.0 - np.asarray(probs, dtype=float)[:, LABELS.index("SAFE")]
+
+
+def prediction_distribution(y_true: list[str], probs: np.ndarray) -> dict:
+    """3-class argmax counts on true-SAFE and on true-MALICIOUS rows."""
+    predicted = np.asarray(LABELS)[np.asarray(probs).argmax(axis=1)]
+    y = np.asarray(y_true)
+    return {
+        truth: {label: int(((y == truth) & (predicted == label)).sum()) for label in LABELS}
+        for truth in ("SAFE", "MALICIOUS")
+    }
+
+
+def auroc_with_ci(y_true: list[str], score: np.ndarray, n_boot: int = AUROC_BOOTSTRAP, seed: int = AUROC_SEED) -> dict:
+    """Binary AUROC (MALICIOUS positive) with a percentile bootstrap 95% CI over rows."""
+    from sklearn.metrics import roc_auc_score
+
+    y = (np.asarray(y_true) == "MALICIOUS").astype(int)
+    score = np.asarray(score, dtype=float)
+    if y.min() == y.max():
+        return {"auroc": None, "ci95": None, "n_boot": 0}
+    rng = np.random.default_rng(seed)
+    boots = []
+    for _ in range(n_boot):
+        idx = rng.integers(0, len(y), len(y))
+        if y[idx].min() != y[idx].max():
+            boots.append(roc_auc_score(y[idx], score[idx]))
+    return {
+        "auroc": float(roc_auc_score(y, score)),
+        "ci95": [float(np.percentile(boots, 2.5)), float(np.percentile(boots, 97.5))],
+        "n_boot": len(boots),
+    }
+
+
+def best_validation_threshold(y_true: list[str], score: np.ndarray) -> dict:
+    """Threshold on P(not-SAFE) that maximizes binary accuracy on the given
+    (validation) rows; ties go to the threshold closest to 0.5. Predict
+    MALICIOUS when score >= threshold."""
+    y = np.asarray(y_true) == "MALICIOUS"
+    score = np.asarray(score, dtype=float)
+    values = np.unique(score)
+    candidates = np.unique(np.concatenate([[0.5], (values[:-1] + values[1:]) / 2, [values[0], values[-1] + 1e-9]]))
+    accuracy = np.array([((score >= t) == y).mean() for t in candidates])
+    best = np.flatnonzero(accuracy == accuracy.max())
+    t = float(candidates[best[np.argmin(np.abs(candidates[best] - 0.5))]])
+    return {"threshold": t, "validation_accuracy": float(accuracy.max()), "validation_rows": int(len(y))}
+
+
+def metrics_at_threshold(y_true: list[str], score: np.ndarray, threshold: float) -> dict:
+    y = np.asarray(y_true) == "MALICIOUS"
+    pred = np.asarray(score, dtype=float) >= threshold
+    tp, fp = int((pred & y).sum()), int((pred & ~y).sum())
+    fn, tn = int((~pred & y).sum()), int((~pred & ~y).sum())
+    precision = tp / (tp + fp) if tp + fp else 0.0
+    recall = tp / (tp + fn) if tp + fn else 0.0
+    return {
+        "threshold": threshold,
+        "accuracy": (tp + tn) / len(y),
+        "f1": 2 * precision * recall / (precision + recall) if precision + recall else 0.0,
+        "false_positive_rate": fp / (fp + tn) if fp + tn else None,
+        "n_samples": int(len(y)),
+    }
+
+
+def validation_thresholds(models: dict) -> dict:
+    """Per model: accuracy-maximizing threshold on the neuralchemy VALIDATION
+    split (original Hub rows, the binary headline view). Never the external data."""
+    from src.preprocess import load_split
+
+    val = load_split("validation")
+    val = val[val["derivation"] == "original"]
+    y = ["SAFE" if label == "SAFE" else "MALICIOUS" for label in val["label"]]
+    out = {}
+    for name, predict in models.items():
+        print(f"[{name}] choosing a threshold on the neuralchemy validation split ({len(val)} original rows) ...")
+        out[name] = best_validation_threshold(y, attack_score(_batched(predict, val["text"].tolist())))
+    return out
+
+
+def score_external(y_true: list[str], probs: np.ndarray, threshold: dict | None) -> dict:
+    """Fixed-threshold (argmax) metrics plus the threshold-free and validation-tuned views."""
+    score = attack_score(probs)
+    out = summarize_binary(y_true, probs)
+    out["prediction_distribution"] = prediction_distribution(y_true, probs)
+    out["auroc"] = auroc_with_ci(y_true, score)
+    if threshold is not None:
+        out["validation_tuned"] = metrics_at_threshold(y_true, score, threshold["threshold"])
+    return out
+
+
 def _batched(predict, texts: list[str], size: int = 64) -> np.ndarray:
     return np.concatenate([predict(texts[i : i + size]) for i in range(0, len(texts), size)])
 
@@ -202,6 +304,36 @@ def to_latex(columns: list[str], rows: list[list[str]], caption: str) -> str:
     ) + "\n"
 
 
+def _dist(counts: dict) -> str:
+    return " / ".join(str(counts[label]) for label in LABELS)
+
+
+def threshold_table(datasets_out: list[dict]) -> tuple[list[str], list[list[str]]]:
+    columns = ["dataset", "model", "n", "true SAFE -> S / SU / M", "true MAL -> S / SU / M", "AUROC [95% CI]",
+               "fixed acc", "tuned threshold", "tuned acc", "tuned FPR"]
+    rows = []
+    for entry in datasets_out:
+        if entry["status"] != "ok":
+            continue
+        groups = [(entry["name"], entry["models"])] + [
+            (f"{entry['name']} [{code} subset]", sub["models"]) for code, sub in entry.get("subsets", {}).items()
+        ]
+        for label, per_model in groups:
+            for name, m in per_model.items():
+                auc = m["auroc"]
+                auc_text = "-" if auc["auroc"] is None else f"{auc['auroc']:.4f} [{auc['ci95'][0]:.4f}, {auc['ci95'][1]:.4f}]"
+                tuned = m.get("validation_tuned")
+                fpr = None if tuned is None else tuned["false_positive_rate"]
+                rows.append([
+                    label, name, str(m["n_samples"]), _dist(m["prediction_distribution"]["SAFE"]),
+                    _dist(m["prediction_distribution"]["MALICIOUS"]), auc_text, f"{m['accuracy']:.4f}",
+                    "-" if tuned is None else f"{tuned['threshold']:.4f}",
+                    "-" if tuned is None else f"{tuned['accuracy']:.4f}",
+                    "-" if fpr is None else f"{fpr:.4f}",
+                ])
+    return columns, rows
+
+
 def main(argv: list[str] | None = None) -> dict:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--protectai", action="store_true", help="Also evaluate protectai/deberta-v3-base-prompt-injection-v2.")
@@ -211,6 +343,7 @@ def main(argv: list[str] | None = None) -> dict:
     models, model_skips = load_models(args.protectai)
     for name, reason in model_skips.items():
         print(f"[model {name}] skipped: {reason[:200]}")
+    thresholds = validation_thresholds(models)
 
     datasets_out = []
     for ds in DATASETS:
@@ -242,13 +375,28 @@ def main(argv: list[str] | None = None) -> dict:
             f"evaluating {len(kept)}"
         )
         texts = [clean_text(t) for t in kept["text"]]  # same normalization as the API
+        subsets = {}
+        if ds.name.startswith("deepset/"):
+            from src.external_diagnostics import language_of
+
+            subsets["en"] = (kept["text"].map(language_of) == "en").to_numpy()
         entry["models"] = {}
+        entry["subsets"] = {code: {"rows": int(mask.sum()), "selection": "stopword heuristic (src.external_diagnostics.language_of)",
+                                   "models": {}} for code, mask in subsets.items()}
+        y_true = kept["label"].tolist()
         for name, predict in models.items():
-            metrics = summarize_binary(kept["label"].tolist(), _batched(predict, texts))
+            probs = _batched(predict, texts)
+            metrics = score_external(y_true, probs, thresholds.get(name))
             entry["models"][name] = metrics
+            for code, mask in subsets.items():
+                entry["subsets"][code]["models"][name] = score_external(
+                    [y for y, keep in zip(y_true, mask) if keep], probs[mask], thresholds.get(name)
+                )
+            tuned = metrics.get("validation_tuned", {})
             print(
                 f"   {name:<10} acc={metrics['accuracy']:.4f} f1={metrics['f1']:.4f} "
-                f"fpr={metrics['false_positive_rate']:.4f} ece={metrics['ece']:.4f}"
+                f"fpr={metrics['false_positive_rate']:.4f} ece={metrics['ece']:.4f} auroc={metrics['auroc']['auroc']:.4f} "
+                f"| val-threshold {tuned.get('threshold', float('nan')):.4f}: acc={tuned.get('accuracy', float('nan')):.4f}"
             )
         entry["status"] = "ok"
         datasets_out.append(entry)
@@ -258,6 +406,14 @@ def main(argv: list[str] | None = None) -> dict:
         "training_dataset": provenance,
         "dedup_reference": "all rows of data/train.csv plus the classical model's train-only extras",
         "models_skipped": model_skips,
+        "views": {
+            "fixed_threshold": "argmax of the 3-class output (the label the API returns); no tuning",
+            "auroc": "threshold-free; score = P(not-SAFE) = 1 - P(SAFE); percentile bootstrap 95% CI "
+                     f"({AUROC_BOOTSTRAP} resamples of rows, seed {AUROC_SEED})",
+            "validation_tuned": "threshold on P(not-SAFE) that maximizes binary accuracy on the neuralchemy "
+                                "VALIDATION split (original rows); chosen once per model, never on external data",
+        },
+        "validation_thresholds": thresholds,
         "datasets": datasets_out,
     }
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -280,7 +436,15 @@ def main(argv: list[str] | None = None) -> dict:
     TABLES_DIR.mkdir(parents=True, exist_ok=True)
     (TABLES_DIR / "external_eval.md").write_text(f"{caption}\n\n" + to_markdown(columns, rows), encoding="utf-8")
     (TABLES_DIR / "external_eval.tex").write_text(to_latex(columns, rows, caption), encoding="utf-8")
-    print(f"\nWrote {OUTPUT_PATH.relative_to(ROOT)} and artifacts/tables/external_eval.md|.tex")
+
+    t_columns, t_rows = threshold_table(datasets_out)
+    t_caption = (
+        "External test sets: prediction distribution and AUROC. Fixed = argmax label (no tuning); AUROC is "
+        "threshold-free on P(not-SAFE) with a bootstrap 95% CI; tuned = threshold chosen on the neuralchemy "
+        "VALIDATION split only (never on external data)."
+    )
+    (TABLES_DIR / "external_eval_thresholds.md").write_text(f"{t_caption}\n\n" + to_markdown(t_columns, t_rows), encoding="utf-8")
+    print(f"\nWrote {OUTPUT_PATH.relative_to(ROOT)} and artifacts/tables/external_eval.md|.tex, external_eval_thresholds.md")
     return results
 
 
