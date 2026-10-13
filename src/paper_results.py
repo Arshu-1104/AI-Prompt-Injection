@@ -104,7 +104,7 @@ class TransformerPredictor:
     columns, so it can never predict the synthetic SUSPICIOUS class.
     """
 
-    def __init__(self, source: str, max_length: int = 256, batch_size: int = 32):
+    def __init__(self, source: str, max_length: int | None = None, batch_size: int = 32):
         import torch
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
@@ -112,7 +112,8 @@ class TransformerPredictor:
         self.torch = torch
         self.tokenizer = AutoTokenizer.from_pretrained(source)
         self.model = AutoModelForSequenceClassification.from_pretrained(source).to("cpu").eval()
-        self.max_length = max_length
+        # Trained PromptGuard models carry their training length; others default to 256.
+        self.max_length = max_length or int(getattr(self.model.config, "promptguard_max_length", 256))
         self.batch_size = batch_size
         self.columns = [
             LABELS.index(self._map_label(self.model.config.id2label[i])) for i in range(self.model.config.num_labels)
@@ -233,8 +234,11 @@ def run_transformer(model_type, seeds, test_df, categories, latency_texts, args)
     for seed in seeds:
         out_dir = RUNS_DIR / model_type / f"seed_{seed}"
         cli = ["--seed", str(seed), "--epochs", str(args.epochs), "--output-dir", str(out_dir)]
-        if args.batch_size:
-            cli += ["--batch-size", str(args.batch_size)]
+        batch_size = args.guard_batch_size if model_type == "guard" and args.guard_batch_size else args.batch_size
+        if batch_size:
+            cli += ["--batch-size", str(batch_size)]
+        if args.max_length:
+            cli += ["--max-length", str(args.max_length)]
         if args.max_samples:
             cli += ["--max-samples", str(args.max_samples)]
         print(f"[{model_type}] seed {seed}: training -> {out_dir}")
@@ -514,6 +518,9 @@ def main(argv: list[str] | None = None) -> dict:
     parser.add_argument("--base-seed", type=int, default=42)
     parser.add_argument("--epochs", type=float, default=3)
     parser.add_argument("--batch-size", type=int, default=None, help="Default: the training script's (32 GPU / 16 CPU).")
+    parser.add_argument("--guard-batch-size", type=int, default=None,
+                        help="Batch size for guard only (ModernBERT needs a smaller one on small GPUs).")
+    parser.add_argument("--max-length", type=int, default=None, help="Training --max-length for bert/guard (default: script's).")
     parser.add_argument("--max-samples", type=int, default=None, help="Smoke run: cap transformer train/test rows.")
     parser.add_argument("--latency-samples", type=int, default=200)
     parser.add_argument("--protectai", action="store_true", help=f"Also evaluate {PROTECTAI_ID}.")

@@ -509,6 +509,8 @@ def train_model(spec: ModelSpec, args: argparse.Namespace, shared_outputs: bool 
             raise TrainingError(f"{message} Weights were NOT saved to {output_dir}. Metrics: {artifact_metrics_path}")
         print(f"\n{'!' * 78}\nWARNING: {message}\nExpected for a tiny smoke run; a full run would stop here.\n{'!' * 78}")
 
+    # Inference reads this so it truncates exactly like training did.
+    trainer.model.config.promptguard_max_length = args.max_length
     trainer.save_model(str(output_dir))
     tokenizer.save_pretrained(str(output_dir))
     _write_json(output_dir / "metrics.json", report)

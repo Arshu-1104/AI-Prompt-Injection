@@ -28,7 +28,12 @@ from src.train_classical import RuleBasedClassifier
 
 
 LABELS = ["SAFE", "SUSPICIOUS", "MALICIOUS"]
-MAX_LENGTH = 256
+MAX_LENGTH = 256  # fallback for weights saved before promptguard_max_length existed
+
+
+def model_max_length(model) -> int:
+    """The --max-length the model was trained with (stored in its config)."""
+    return int(getattr(model.config, "promptguard_max_length", MAX_LENGTH))
 
 
 def _load_transformer(model_type: str, device, **model_kwargs):
@@ -134,7 +139,7 @@ class PromptAnalyzer:
         model, tokenizer = (
             (self.bert_model, self.bert_tokenizer) if self.model_type == "bert" else (self.guard_model, self.guard_tokenizer)
         )
-        encoded = tokenizer(texts, truncation=True, max_length=MAX_LENGTH, padding=True, return_tensors="pt")
+        encoded = tokenizer(texts, truncation=True, max_length=model_max_length(model), padding=True, return_tensors="pt")
         encoded = {k: v.to(self.device) for k, v in encoded.items()}
         with torch.no_grad():
             probs = torch.softmax(model(**encoded).logits.float(), dim=-1).cpu().numpy()
@@ -154,7 +159,7 @@ class PromptAnalyzer:
         if not BERT_RUNTIME_AVAILABLE or self.device is None:
             raise RuntimeError("BERT runtime unavailable.")
         encoded = self.bert_tokenizer(
-            text, truncation=True, max_length=MAX_LENGTH, return_tensors="pt"
+            text, truncation=True, max_length=model_max_length(self.bert_model), return_tensors="pt"
         )
         encoded = {k: v.to(self.device) for k, v in encoded.items()}
         with torch.no_grad():
@@ -169,7 +174,7 @@ class PromptAnalyzer:
         if not BERT_RUNTIME_AVAILABLE or self.device is None:
             raise RuntimeError("Guard model runtime unavailable.")
         encoded = self.guard_tokenizer(
-            text, truncation=True, max_length=MAX_LENGTH, return_tensors="pt"
+            text, truncation=True, max_length=model_max_length(self.guard_model), return_tensors="pt"
         )
         encoded = {k: v.to(self.device) for k, v in encoded.items()}
         with torch.no_grad():
@@ -184,7 +189,7 @@ class PromptAnalyzer:
         if not BERT_RUNTIME_AVAILABLE or self.device is None:
             return {}
         encoded = self.bert_tokenizer(
-            text, truncation=True, max_length=MAX_LENGTH, return_tensors="pt"
+            text, truncation=True, max_length=model_max_length(self.bert_model), return_tensors="pt"
         )
         encoded = {k: v.to(self.device) for k, v in encoded.items()}
         with torch.no_grad():
