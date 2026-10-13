@@ -214,11 +214,13 @@ def main() -> None:
         "correct": correct_n,
         # Percentage (0-100), kept for existing readers.
         "robustness_score": robustness_score,
-        # Fraction (0-1) of exact 3-class matches; the CI gate compares this against ROBUSTNESS_BASELINE.
+        # Fraction (0-1) of exact 3-class matches. Reported, NOT gating.
         "robustness_fraction": correct_n / total,
         "robustness_wilson95": list(wilson_interval(correct_n, total)),
-        # Fraction flagged correctly as SAFE vs attack (SUSPICIOUS and MALICIOUS both count as attack).
+        # Fraction flagged correctly as SAFE vs attack (SUSPICIOUS and MALICIOUS both count
+        # as attack). The CI gate compares this against BINARY_ROBUSTNESS_BASELINE (0.90).
         "binary_detection_fraction": binary_n / total,
+        "gate": {"metric": "binary_detection_fraction", "default_baseline": 0.90},
         "binary_detection_wilson95": list(wilson_interval(binary_n, total)),
         "low_confidence_n": LOW_CONFIDENCE_N,
         "failure_cases": failures,
@@ -246,8 +248,8 @@ def main() -> None:
         fig.savefig(figures_dir / "robustness_by_category.png", dpi=140)
         plt.close(fig)
 
-    print(f"Robustness score: {robustness_score:.2f}% ({correct_n}/{total})  [exact 3-class match; CI gate]")
-    print(f"Binary detection: {binary_n / total * 100:.2f}% ({binary_n}/{total})  [SAFE vs attack]")
+    print(f"Robustness score: {robustness_score:.2f}% ({correct_n}/{total})  [exact 3-class match; reported, not gating]")
+    print(f"Binary detection: {binary_n / total * 100:.2f}% ({binary_n}/{total})  [SAFE vs attack; CI gate, baseline 0.90]")
     print("\nPer-category (adversarial suite)   exact match | binary detection")
     for cat in sorted(by_category):
         print(f"  {cat:<18} {_fmt(by_category[cat])}\n  {'':<18} {_fmt(by_category_binary[cat])}")

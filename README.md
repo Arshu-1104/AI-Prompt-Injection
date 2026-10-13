@@ -484,11 +484,12 @@ Features: model switcher, single prompt analysis, risk badge, confidence bar, pa
 
 1. **bert and guard are untrained.** They need a machine where torch runs; see
    "Reproducing the results". There are no bert, guard or ProtectAI numbers yet.
-2. **Robustness gate not met.** The CI gate compares exact 3-class matches on the adversarial suite
-   against `ROBUSTNESS_BASELINE` (0.75). The validation-selected classical model is below it. Most
-   misses are SUSPICIOUS-vs-MALICIOUS disagreements on hand-labelled prompts; binary detection on
-   the same suite is much higher. The baseline is deliberately unchanged, pending a maintainer
-   decision (keep exact match, or gate on binary detection).
+2. **Robustness gate: binary, baseline 0.90.** CI gates on binary flagged-or-not detection over the
+   `src/robustness.py` adversarial suite: SAFE vs not-SAFE must be at least `BINARY_ROBUSTNESS_BASELINE`
+   (default 0.90). Rationale: the SUSPICIOUS-vs-MALICIOUS expectations in the suite are hand-assigned
+   and subjective, and the synthetic SUSPICIOUS training class does not match them. What matters for
+   protection is whether an attack is flagged at all. The 3-class exact-match score is still computed
+   and reported in every robustness report and CI log, but it does not gate.
 3. **Synthetic SUSPICIOUS class.** It comes from appending a manipulation phrase to SAFE rows, which
    is easy to detect (near-perfect SUSPICIOUS F1). That says little about real ambiguous prompts;
    use the binary metrics for comparisons.

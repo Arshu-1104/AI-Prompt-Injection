@@ -20,21 +20,26 @@ jobs:
       - run: pytest -q
       - run: python -m src.train_classical
       - name: Robustness check
-        # ROBUSTNESS_BASELINE is a fraction (0-1], e.g. 0.75. The gate reads the
-        # fraction from the JSON report, not the percentage printed to stdout.
+        # Gate (maintainer decision): binary flagged-or-not detection on the
+        # adversarial suite (SAFE vs not-SAFE) must be >= BINARY_ROBUSTNESS_BASELINE
+        # (a fraction, default 0.90). The 3-class exact-match score is printed and
+        # stored in the report but does not gate. A new variable name is used so a
+        # leftover ROBUSTNESS_BASELINE (the old 3-class gate) cannot apply here.
         env:
-          ROBUSTNESS_BASELINE: ${{ vars.ROBUSTNESS_BASELINE }}
+          BINARY_ROBUSTNESS_BASELINE: ${{ vars.BINARY_ROBUSTNESS_BASELINE }}
         run: |
           python -m src.robustness
           python - <<'EOF'
           import json, os, sys
           report = json.load(open("artifacts/robustness_report.json", encoding="utf-8"))
-          score = float(report["robustness_fraction"])
-          baseline = float(os.environ.get("ROBUSTNESS_BASELINE") or 0.75)
+          binary = float(report["binary_detection_fraction"])
+          exact = float(report["robustness_fraction"])
+          baseline = float(os.environ.get("BINARY_ROBUSTNESS_BASELINE") or 0.90)
           if not 0 < baseline <= 1:
-              sys.exit(f"ROBUSTNESS_BASELINE must be a fraction in (0, 1], got {baseline}")
-          print(f"Robustness {score:.4f} vs baseline {baseline:.4f}")
-          sys.exit(0 if score >= baseline else 1)
+              sys.exit(f"BINARY_ROBUSTNESS_BASELINE must be a fraction in (0, 1], got {baseline}")
+          print(f"Binary detection {binary:.4f} vs baseline {baseline:.4f} (gating)")
+          print(f"3-class exact match {exact:.4f} (reported, not gating)")
+          sys.exit(0 if binary >= baseline else 1)
           EOF
 
   test-postgres:
