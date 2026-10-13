@@ -13,6 +13,7 @@ import sys
 import time
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
@@ -323,6 +324,52 @@ def _callbacks(transformers):
 # --------------------------------------------------------------------------- training
 
 
+def _now_iso() -> str:
+    """Local wall-clock time, ISO 8601 with the UTC offset."""
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def checkpoint_step(name: str | None) -> int | None:
+    """'checkpoint-2113' (or a path ending in it) -> 2113."""
+    if not name:
+        return None
+    return int(Path(name).name.rsplit("-", 1)[-1])
+
+
+def training_provenance(
+    *,
+    started_at: str,
+    finished_at: str,
+    global_step: int,
+    steps_per_epoch: int,
+    best_model_checkpoint: str | None,
+    log_history: list[dict],
+    resumed_from_step: int | None,
+) -> dict:
+    """Run facts recorded when training happens (the checkpoint folder is deleted later).
+
+    best_epoch is the epoch of the validation evaluation at the best checkpoint's
+    step; None when no checkpoint was selected (smoke runs).
+    """
+    best_name = Path(best_model_checkpoint).name if best_model_checkpoint else None
+    best_step = checkpoint_step(best_name)
+    best_epoch = None
+    if best_step is not None:
+        evals = [e for e in log_history if "eval_f1" in e and e.get("step") == best_step]
+        epoch = evals[-1]["epoch"] if evals else best_step / steps_per_epoch
+        best_epoch = int(round(float(epoch)))
+    return {
+        "training_started_at": started_at,
+        "training_finished_at": finished_at,
+        "total_optimizer_steps": int(global_step),
+        "steps_per_epoch": int(steps_per_epoch),
+        "best_epoch": best_epoch,
+        "best_checkpoint_name": best_name,
+        "resumed": resumed_from_step is not None,
+        "resumed_from_step": resumed_from_step,
+    }
+
+
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
@@ -439,6 +486,14 @@ def train_model(spec: ModelSpec, args: argparse.Namespace, shared_outputs: bool 
         callbacks=callbacks,
     )
 
+    resumed_from_step = None
+    if args.resume:
+        from transformers.trainer_utils import get_last_checkpoint
+
+        # The checkpoint trainer.train(resume_from_checkpoint=True) picks up.
+        last = get_last_checkpoint(str(checkpoint_dir)) if checkpoint_dir.is_dir() else None
+        resumed_from_step = checkpoint_step(last)
+    started_at = _now_iso()
     started = time.monotonic()
     try:
         try:
@@ -447,6 +502,16 @@ def train_model(spec: ModelSpec, args: argparse.Namespace, shared_outputs: bool 
             if args.resume and "checkpoint" in str(exc).lower():
                 raise TrainingError(f"--resume: no checkpoint found in {checkpoint_dir} ({exc}).") from exc
             raise
+        finished_at = _now_iso()
+        run_facts = training_provenance(
+            started_at=started_at,
+            finished_at=finished_at,
+            global_step=trainer.state.global_step,
+            steps_per_epoch=len(trainer.get_train_dataloader()) // training_args.gradient_accumulation_steps,
+            best_model_checkpoint=trainer.state.best_model_checkpoint,
+            log_history=trainer.state.log_history,
+            resumed_from_step=resumed_from_step,
+        )
         model = trainer.model
         probs = _predict_probs(torch, model, tokenizer, test_df["text"].tolist(), args.max_length, args.batch_size)
     except Exception as exc:
@@ -484,7 +549,7 @@ def train_model(spec: ModelSpec, args: argparse.Namespace, shared_outputs: bool 
             "epochs_completed": float(trainer.state.epoch or 0),
             "best_validation_f1": trainer.state.best_metric,
         },
-        "resumed": bool(args.resume),
+        **run_facts,
         "versions": {"torch": torch.__version__, "transformers": transformers.__version__},
         "sanity_check": sanity,
     }
