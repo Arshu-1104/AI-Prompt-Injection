@@ -11,11 +11,10 @@ import numpy as np
 import pandas as pd
 
 try:
-    from sklearn.base import clone
     from sklearn.ensemble import RandomForestClassifier
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.naive_bayes import MultinomialNB
-    from sklearn.pipeline import Pipeline
+    from sklearn.pipeline import FeatureUnion, Pipeline
     from sklearn.linear_model import LogisticRegression
 
     SKLEARN_AVAILABLE = True
@@ -128,6 +127,57 @@ class RuleBasedClassifier:
         return self.classes_[np.argmax(probs, axis=1)]
 
 
+def _word_tfidf() -> "TfidfVectorizer":
+    return TfidfVectorizer(max_features=20000, ngram_range=(1, 3), sublinear_tf=True)
+
+
+def _word_char_tfidf() -> "FeatureUnion":
+    # Character n-grams within word boundaries add robustness to spelling,
+    # spacing and leetspeak changes that word n-grams miss.
+    return FeatureUnion(
+        [
+            ("word", _word_tfidf()),
+            ("char", TfidfVectorizer(analyzer="char_wb", ngram_range=(2, 5), max_features=50000, sublinear_tf=True)),
+        ]
+    )
+
+
+# Inverse regularization strengths tried for logistic regression.
+LOGREG_C_GRID = (0.3, 1.0, 3.0, 10.0)
+
+
+def candidate_pipelines(random_state: int) -> dict[str, "Pipeline"]:
+    """The fixed candidate set; the winner is chosen on the validation split only.
+
+    class_weight="balanced": the training data is skewed toward MALICIOUS
+    (~60/40 in the source plus leetspeak variants) with the synthetic SUSPICIOUS
+    class as a thin minority. MultinomialNB has no class_weight, so it gets an
+    explicit uniform class_prior for the same reason.
+    """
+    candidates: dict[str, Pipeline] = {}
+    for features_name, features in (("word", _word_tfidf), ("word+char", _word_char_tfidf)):
+        for c in LOGREG_C_GRID:
+            candidates[f"logreg[{features_name},C={c:g}]"] = Pipeline(
+                steps=[
+                    ("tfidf", features()),
+                    ("classifier", LogisticRegression(max_iter=2000, C=c, random_state=random_state, class_weight="balanced")),
+                ]
+            )
+    candidates["random_forest"] = Pipeline(
+        steps=[
+            ("tfidf", _word_tfidf()),
+            ("classifier", RandomForestClassifier(n_estimators=200, max_depth=10, random_state=random_state, class_weight="balanced")),
+        ]
+    )
+    candidates["multinomial_nb"] = Pipeline(
+        steps=[
+            ("tfidf", TfidfVectorizer(max_features=20000, ngram_range=(1, 2), sublinear_tf=False)),
+            ("classifier", MultinomialNB(class_prior=[1 / 3, 1 / 3, 1 / 3])),
+        ]
+    )
+    return candidates
+
+
 def fit_classical(random_state: int = 42, allow_rule_based_fallback: bool = False) -> dict:
     """Fit candidates on the official train split, pick the best by weighted F1 on
     the official validation split, and report it on the test split. Saves nothing.
@@ -164,29 +214,13 @@ def fit_classical(random_state: int = 42, allow_rule_based_fallback: bool = Fals
     y_train = pd.concat([train_df["label"], pd.Series(["SAFE"] * len(everyday))], ignore_index=True)
 
     if SKLEARN_AVAILABLE:
-        vectorizer = TfidfVectorizer(max_features=20000, ngram_range=(1, 3), sublinear_tf=True)
-        nb_vectorizer = TfidfVectorizer(max_features=20000, ngram_range=(1, 2), sublinear_tf=False)
-        # class_weight="balanced": the training data is skewed toward MALICIOUS
-        # (~60/40 in the source plus leetspeak variants) with the synthetic
-        # SUSPICIOUS class as a thin minority. MultinomialNB has no class_weight,
-        # so it gets an explicit uniform class_prior for the same reason.
-        models = {
-            "logistic_regression": LogisticRegression(
-                max_iter=1000, C=1.0, random_state=random_state, class_weight="balanced"
-            ),
-            "random_forest": RandomForestClassifier(
-                n_estimators=200, max_depth=10, random_state=random_state, class_weight="balanced"
-            ),
-            "multinomial_nb": MultinomialNB(class_prior=[1 / 3, 1 / 3, 1 / 3]),
-        }
         validation: dict[str, dict] = {}
         pipelines: dict[str, Pipeline] = {}
-        for name, model in models.items():
-            selected_vectorizer = nb_vectorizer if name == "multinomial_nb" else vectorizer
-            pipeline = Pipeline(steps=[("tfidf", clone(selected_vectorizer)), ("classifier", clone(model))])
+        for name, pipeline in candidate_pipelines(random_state).items():
             pipeline.fit(x_train, y_train)
             validation[name] = evaluate_split(val_df, _ordered_proba(pipeline, val_df["text"]))
             pipelines[name] = pipeline
+            print(f"  candidate {name:<28} validation 3-class F1_w={validation[name]['three_class']['f1_weighted']:.4f}")
         best_name = max(validation, key=lambda m: validation[m]["three_class"]["f1_weighted"])
         best_pipeline = pipelines[best_name]
     else:
