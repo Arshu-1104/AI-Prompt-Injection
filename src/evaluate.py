@@ -1,29 +1,36 @@
+"""Evaluate classical, bert and guard on the held-out test set.
+
+    python -m src.evaluate                      # all three models, CPU latency
+    python -m src.evaluate --models classical bert --max-samples 200
+
+Models that cannot be loaded (no torch, no weights, ...) are reported as
+skipped with the reason instead of being silently replaced.
+"""
 from __future__ import annotations
 
+import argparse
 import json
+import statistics
+import time
 from pathlib import Path
 
-import joblib
 import numpy as np
 import pandas as pd
-try:
-    import torch
-    from transformers import DistilBertForSequenceClassification, DistilBertTokenizerFast
-
-    BERT_EVAL_AVAILABLE = True
-except Exception:
-    BERT_EVAL_AVAILABLE = False
 
 try:
-    from sklearn.metrics import classification_report, confusion_matrix
+    from sklearn.metrics import confusion_matrix
 
     SKLEARN_METRICS_AVAILABLE = True
 except Exception:
     SKLEARN_METRICS_AVAILABLE = False
 
+from src.metrics import LABELS, compute_ece, summarize_predictions
 from src.preprocess import get_train_test_data
 
 try:
+    import matplotlib
+
+    matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import seaborn as sns
 
@@ -33,51 +40,11 @@ except Exception as exc:
     PLOTTING_IMPORT_ERROR = str(exc)
 
 
-LABELS = ["SAFE", "SUSPICIOUS", "MALICIOUS"]
+MODEL_TYPES = ["classical", "bert", "guard"]
+WARMUP_CALLS = 3
 
-
-def _compute_ece(
-    y_true: list[str],
-    y_pred: list[str],
-    confidences: list[float],
-    n_bins: int = 10,
-) -> tuple[float, list[dict]]:
-    """Compute Expected Calibration Error (ECE) with *n_bins* equal-width bins.
-
-    Returns (ece_value, bin_stats) where bin_stats is a list of dicts with
-    keys: bin_lower, bin_upper, bin_acc, bin_conf, bin_count.
-    """
-    bins = np.linspace(0.0, 1.0, n_bins + 1)
-    bin_stats: list[dict] = []
-    ece = 0.0
-    total = len(y_true)
-
-    for i in range(n_bins):
-        lower, upper = bins[i], bins[i + 1]
-        # Include upper bound only for the last bin
-        mask = [
-            lower <= c < upper if i < n_bins - 1 else lower <= c <= upper
-            for c in confidences
-        ]
-        indices = [j for j, m in enumerate(mask) if m]
-        if not indices:
-            bin_stats.append(
-                {"bin_lower": lower, "bin_upper": upper, "bin_acc": 0.0, "bin_conf": 0.0, "bin_count": 0}
-            )
-            continue
-        bin_acc = sum(1 for j in indices if y_true[j] == y_pred[j]) / len(indices)
-        bin_conf = sum(confidences[j] for j in indices) / len(indices)
-        ece += (len(indices) / total) * abs(bin_acc - bin_conf)
-        bin_stats.append(
-            {
-                "bin_lower": float(lower),
-                "bin_upper": float(upper),
-                "bin_acc": float(bin_acc),
-                "bin_conf": float(bin_conf),
-                "bin_count": len(indices),
-            }
-        )
-    return float(ece), bin_stats
+# Kept for backwards compatibility with older imports.
+_compute_ece = compute_ece
 
 
 def _plot_reliability_diagram(
@@ -126,157 +93,125 @@ def _basic_confusion_matrix(y_true: list[str], y_pred: list[str], labels: list[s
     return matrix
 
 
-def _basic_report(y_true: list[str], y_pred: list[str], labels: list[str]) -> dict:
-    total = len(y_true)
-    correct = sum(int(t == p) for t, p in zip(y_true, y_pred))
-    accuracy = (correct / total) if total else 0.0
-    report: dict[str, dict[str, float] | float] = {"accuracy": accuracy}
-    weighted_f1 = 0.0
-    weighted_p = 0.0
-    weighted_r = 0.0
-    for label in labels:
-        tp = sum(1 for t, p in zip(y_true, y_pred) if t == label and p == label)
-        fp = sum(1 for t, p in zip(y_true, y_pred) if t != label and p == label)
-        fn = sum(1 for t, p in zip(y_true, y_pred) if t == label and p != label)
-        support = sum(1 for t in y_true if t == label)
-        precision = tp / (tp + fp) if (tp + fp) else 0.0
-        recall = tp / (tp + fn) if (tp + fn) else 0.0
-        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
-        report[label] = {"precision": precision, "recall": recall, "f1-score": f1, "support": float(support)}
-        weighted_f1 += f1 * support
-        weighted_p += precision * support
-        weighted_r += recall * support
-    denom = max(total, 1)
-    report["weighted avg"] = {
-        "precision": weighted_p / denom,
-        "recall": weighted_r / denom,
-        "f1-score": weighted_f1 / denom,
-        "support": float(total),
-    }
-    return report
+def _evaluate_one(model_type: str, texts: list[str], y_true: list[str], device: str) -> tuple[dict, list[str], list[float]]:
+    """Predict every test prompt one at a time (as the API does) and time each call."""
+    from src.predict import PromptAnalyzer
+
+    analyzer = PromptAnalyzer(model_type=model_type, device=device)
+    predict_fn = {
+        "classical": analyzer._predict_classical,
+        "bert": analyzer._predict_bert,
+        "guard": analyzer._predict_guard,
+    }[model_type]
+    for text in texts[:WARMUP_CALLS]:
+        predict_fn(text)
+
+    preds: list[str] = []
+    confs: list[float] = []
+    latencies_ms: list[float] = []
+    for text in texts:
+        t0 = time.perf_counter()
+        label, confidence = predict_fn(text)
+        latencies_ms.append((time.perf_counter() - t0) * 1000)
+        preds.append(label)
+        confs.append(confidence)
+
+    summary = summarize_predictions(y_true, preds, confs)
+    summary.update(
+        {
+            "model": model_type,
+            "status": "ok",
+            "source": analyzer.source,
+            "device": device if model_type != "classical" else "cpu",
+            "mean_latency_ms": float(statistics.fmean(latencies_ms)),
+            "p95_latency_ms": float(np.percentile(latencies_ms, 95)),
+        }
+    )
+    return summary, preds, confs
 
 
-def _predict_bert(texts: list[str], model_dir: Path) -> tuple[list[str], list[float]]:
-    """Returns (predictions, max_confidences) for the test set."""
-    if not BERT_EVAL_AVAILABLE:
-        raise RuntimeError("BERT evaluation dependencies are not available.")
-    tokenizer = DistilBertTokenizerFast.from_pretrained(str(model_dir))
-    model = DistilBertForSequenceClassification.from_pretrained(str(model_dir))
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
-    model.eval()
-
-    predictions: list[str] = []
-    confidences: list[float] = []
-    with torch.no_grad():
-        for text in texts:
-            encoded = tokenizer(
-                text,
-                truncation=True,
-                padding="max_length",
-                max_length=256,
-                return_tensors="pt",
-            )
-            encoded = {k: v.to(device) for k, v in encoded.items()}
-            logits = model(**encoded).logits
-            probs = torch.softmax(logits, dim=1).squeeze(0)
-            pred_idx = int(torch.argmax(probs).item())
-            predictions.append(LABELS[pred_idx])
-            confidences.append(float(probs[pred_idx].item()))
-    return predictions, confidences
-
-
-def main() -> None:
+def evaluate_all(
+    models: list[str] | None = None,
+    device: str = "cpu",
+    max_samples: int | None = None,
+    write_artifacts: bool = True,
+) -> list[dict]:
+    """Evaluate each model; returns one row per model (status 'ok' or 'skipped')."""
     root = Path(__file__).resolve().parents[1]
     artifacts_dir = root / "artifacts"
     figures_dir = artifacts_dir / "figures"
-    models_dir = root / "models"
-    artifacts_dir.mkdir(parents=True, exist_ok=True)
     figures_dir.mkdir(parents=True, exist_ok=True)
 
     _, test_df = get_train_test_data()
+    if max_samples:
+        test_df = test_df.sample(n=min(max_samples, len(test_df)), random_state=42)
     x_test = test_df["text"].tolist()
     y_true = test_df["label"].tolist()
 
-    classical_path = models_dir / "classical_model.pkl"
-    bert_dir = models_dir / "bert_model"
-    if not classical_path.exists():
-        raise FileNotFoundError(f"Classical model not found at {classical_path}.")
-    if not bert_dir.exists():
-        raise FileNotFoundError(f"BERT model not found at {bert_dir}.")
+    rows: list[dict] = []
+    outputs: dict[str, tuple[list[str], list[float]]] = {}
+    for model_type in models or MODEL_TYPES:
+        print(f"Evaluating {model_type} on {len(x_test)} prompts ...")
+        try:
+            summary, preds, confs = _evaluate_one(model_type, x_test, y_true, device)
+        except Exception as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+            print(f"  skipped: {reason}")
+            rows.append({"model": model_type, "status": "skipped", "reason": reason})
+            continue
+        rows.append(summary)
+        outputs[model_type] = (preds, confs)
 
-    classical_model = joblib.load(classical_path)
-    classical_preds = classical_model.predict(x_test).tolist()
-    classical_probs_matrix = classical_model.predict_proba(x_test)
-    classical_confs = [float(row.max()) for row in classical_probs_matrix]
+    if not outputs:
+        raise RuntimeError("No model could be evaluated; see the skip reasons above.")
 
-    if BERT_EVAL_AVAILABLE and bert_dir.exists() and any(bert_dir.iterdir()):
-        bert_preds, bert_confs = _predict_bert(x_test, bert_dir)
-    else:
-        bert_preds = classical_preds[:]
-        bert_confs = classical_confs[:]
+    if write_artifacts:
+        _write_artifacts(rows, outputs, y_true, artifacts_dir, figures_dir)
+    return rows
 
-    if SKLEARN_METRICS_AVAILABLE:
-        cm_classical = confusion_matrix(y_true, classical_preds, labels=LABELS)
-        cm_bert = confusion_matrix(y_true, bert_preds, labels=LABELS)
-        classical_report = classification_report(y_true, classical_preds, output_dict=True, zero_division=0)
-        bert_report = classification_report(y_true, bert_preds, output_dict=True, zero_division=0)
-    else:
-        cm_classical = _basic_confusion_matrix(y_true, classical_preds, LABELS)
-        cm_bert = _basic_confusion_matrix(y_true, bert_preds, LABELS)
-        classical_report = _basic_report(y_true, classical_preds, LABELS)
-        bert_report = _basic_report(y_true, bert_preds, LABELS)
+
+def _write_artifacts(
+    rows: list[dict],
+    outputs: dict[str, tuple[list[str], list[float]]],
+    y_true: list[str],
+    artifacts_dir: Path,
+    figures_dir: Path,
+) -> None:
+    ok_rows = [r for r in rows if r["status"] == "ok"]
+    calibration: dict = {}
+    for model_type, (preds, confs) in outputs.items():
+        ece, bins = compute_ece(y_true, preds, confs)
+        calibration[f"ece_{model_type}"] = ece
+        calibration[f"{model_type}_bins"] = bins
+        _plot_reliability_diagram(bins, model_type, ece, figures_dir / f"calibration_plot_{model_type}.png")
+        if PLOTTING_AVAILABLE:
+            cm = (
+                confusion_matrix(y_true, preds, labels=LABELS)
+                if SKLEARN_METRICS_AVAILABLE
+                else _basic_confusion_matrix(y_true, preds, LABELS)
+            )
+            plt.figure(figsize=(6, 5))
+            sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=LABELS, yticklabels=LABELS)
+            plt.title(f"Confusion Matrix - {model_type}")
+            plt.xlabel("Predicted")
+            plt.ylabel("True")
+            plt.tight_layout()
+            plt.savefig(figures_dir / f"confusion_matrix_{model_type}.png", dpi=140)
+            plt.close()
 
     comparison_df = pd.DataFrame(
         [
             {
-                "model": "classical",
-                "accuracy": classical_report["accuracy"],
-                "precision_weighted": classical_report["weighted avg"]["precision"],
-                "recall_weighted": classical_report["weighted avg"]["recall"],
-                "f1_weighted": classical_report["weighted avg"]["f1-score"],
-            },
-            {
-                "model": "bert",
-                "accuracy": bert_report["accuracy"],
-                "precision_weighted": bert_report["weighted avg"]["precision"],
-                "recall_weighted": bert_report["weighted avg"]["recall"],
-                "f1_weighted": bert_report["weighted avg"]["f1-score"],
-            },
+                "model": r["model"],
+                "accuracy": r["accuracy"],
+                "precision_weighted": r["precision_weighted"],
+                "recall_weighted": r["recall_weighted"],
+                "f1_weighted": r["f1_weighted"],
+            }
+            for r in ok_rows
         ]
     )
-
-    per_class_rows: list[dict[str, float | str]] = []
-    for label in LABELS:
-        per_class_rows.append(
-            {"class": label, "model": "classical", "f1": classical_report[label]["f1-score"]}
-        )
-        per_class_rows.append({"class": label, "model": "bert", "f1": bert_report[label]["f1-score"]})
-    per_class_df = pd.DataFrame(per_class_rows)
-
     if PLOTTING_AVAILABLE:
-        plt.figure(figsize=(6, 5))
-        sns.heatmap(
-            cm_classical, annot=True, fmt="d", cmap="Blues", xticklabels=LABELS, yticklabels=LABELS
-        )
-        plt.title("Confusion Matrix - Classical")
-        plt.xlabel("Predicted")
-        plt.ylabel("True")
-        plt.tight_layout()
-        plt.savefig(figures_dir / "confusion_matrix_classical.png", dpi=140)
-        plt.close()
-
-        plt.figure(figsize=(6, 5))
-        sns.heatmap(
-            cm_bert, annot=True, fmt="d", cmap="Purples", xticklabels=LABELS, yticklabels=LABELS
-        )
-        plt.title("Confusion Matrix - BERT")
-        plt.xlabel("Predicted")
-        plt.ylabel("True")
-        plt.tight_layout()
-        plt.savefig(figures_dir / "confusion_matrix_bert.png", dpi=140)
-        plt.close()
-
         melted = comparison_df.melt(id_vars="model", var_name="metric", value_name="score")
         plt.figure(figsize=(10, 5))
         sns.barplot(data=melted, x="metric", y="score", hue="model")
@@ -287,6 +222,9 @@ def main() -> None:
         plt.savefig(figures_dir / "model_comparison.png", dpi=140)
         plt.close()
 
+        per_class_df = pd.DataFrame(
+            [{"class": label, "model": r["model"], "f1": r["per_class_f1"][label]} for r in ok_rows for label in LABELS]
+        )
         plt.figure(figsize=(8, 5))
         sns.barplot(data=per_class_df, x="class", y="f1", hue="model")
         plt.ylim(0, 1.05)
@@ -298,43 +236,54 @@ def main() -> None:
         print(f"Plotting unavailable due to environment policy: {PLOTTING_IMPORT_ERROR}")
 
     metrics_path = artifacts_dir / "metrics.json"
-    metrics = {}
-    if metrics_path.exists():
-        with open(metrics_path, "r", encoding="utf-8") as f:
-            metrics = json.load(f)
-
-    # --- Calibration (ECE) ---
-    ece_classical, classical_bin_stats = _compute_ece(y_true, classical_preds, classical_confs)
-    ece_bert, bert_bin_stats = _compute_ece(y_true, bert_preds, bert_confs)
-
-    _plot_reliability_diagram(
-        classical_bin_stats, "Classical", ece_classical,
-        figures_dir / "calibration_plot_classical.png",
-    )
-    _plot_reliability_diagram(
-        bert_bin_stats, "BERT", ece_bert,
-        figures_dir / "calibration_plot.png",
-    )
-
-    metrics["evaluation"] = {
-        "comparison": comparison_df.to_dict(orient="records"),
-        "classical_per_class": classical_report,
-        "bert_per_class": bert_report,
-    }
-    metrics["calibration"] = {
-        "ece_classical": ece_classical,
-        "ece_bert": ece_bert,
-        "classical_bins": classical_bin_stats,
-        "bert_bins": bert_bin_stats,
-    }
+    metrics = json.loads(metrics_path.read_text(encoding="utf-8")) if metrics_path.exists() else {}
+    metrics["evaluation"] = {"comparison": comparison_df.to_dict(orient="records"), "models": rows}
+    metrics["calibration"] = calibration
     with open(metrics_path, "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2)
+    comparison_table(rows).to_csv(artifacts_dir / "model_comparison.csv", index=False)
 
-    print(f"Calibration — ECE classical: {ece_classical:.4f}  ECE bert: {ece_bert:.4f}")
-    print("Final comparison table:")
-    print(comparison_df.to_string(index=False))
-    if not BERT_EVAL_AVAILABLE:
-        print("BERT evaluation used classical fallback due to blocked runtime dependencies.")
+
+def comparison_table(rows: list[dict]) -> pd.DataFrame:
+    """Accuracy, weighted F1, ECE and mean CPU latency per model."""
+    table = []
+    for r in rows:
+        if r["status"] != "ok":
+            table.append({"model": r["model"], "status": "skipped", "accuracy": None, "f1_weighted": None,
+                          "ece": None, "mean_latency_ms": None, "n": None})
+            continue
+        table.append(
+            {
+                "model": r["model"],
+                "status": "ok",
+                "accuracy": round(r["accuracy"], 4),
+                "f1_weighted": round(r["f1_weighted"], 4),
+                "ece": round(r["ece"], 4),
+                "mean_latency_ms": round(r["mean_latency_ms"], 2),
+                "n": r["n_samples"],
+            }
+        )
+    df = pd.DataFrame(table)
+    df["n"] = df["n"].astype("Int64")
+    return df
+
+
+def print_comparison(rows: list[dict]) -> None:
+    print("\nModel comparison (held-out test set, latency = single prompt):")
+    print(comparison_table(rows).to_string(index=False, na_rep="-"))
+    for r in rows:
+        if r["status"] != "ok":
+            print(f"  {r['model']} skipped: {r['reason']}")
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--models", nargs="+", choices=MODEL_TYPES, default=MODEL_TYPES)
+    parser.add_argument("--device", default="cpu", help="Torch device for bert/guard (default: cpu, so latency is CPU latency).")
+    parser.add_argument("--max-samples", type=int, default=None, help="Evaluate on a random subset of the test set.")
+    args = parser.parse_args(argv)
+    rows = evaluate_all(args.models, device=args.device, max_samples=args.max_samples)
+    print_comparison(rows)
 
 
 if __name__ == "__main__":

@@ -1,10 +1,17 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><title>PromptGuard Settings</title><style>body{font-family:system-ui;margin:24px;max-width:560px}label{display:block;margin:14px 0 6px}input{width:100%;box-sizing:border-box;padding:8px}button{margin-top:12px;padding:8px 12px}.row{display:flex;gap:10px;align-items:center}.row input{width:auto}.msg{margin-top:12px}</style></head>
+<head><meta charset="utf-8"><title>PromptGuard Settings</title><style>body{font-family:system-ui;margin:24px;max-width:560px}label{display:block;margin:14px 0 6px}input,select{width:100%;box-sizing:border-box;padding:8px}button{margin-top:12px;padding:8px 12px}.row{display:flex;gap:10px;align-items:center}.row input{width:auto}.msg{margin-top:12px}</style></head>
 <body>
   <h1>PromptGuard Settings</h1>
   <label for="endpoint">API Endpoint URL</label><input type="url" id="endpoint" placeholder="http://localhost:8000">
   <label for="apiKey">API Key</label><input type="password" id="apiKey">
+  <label for="model">Model</label>
+  <select id="model">
+    <option value="classical">classical (fast, default)</option>
+    <option value="bert">bert (DistilBERT)</option>
+    <option value="guard">guard (ModernBERT)</option>
+  </select>
+  <small>bert and guard only work if your backend has them loaded; check its /health.</small>
   <button id="testBtn" type="button">Test Connection</button> <span id="testStatus"></span>
   <label class="row"><input type="checkbox" id="enabled"> Enabled</label>
   <button id="saveBtn" type="button">Save</button>

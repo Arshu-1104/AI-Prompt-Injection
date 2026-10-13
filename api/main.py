@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import os
 import time
 from collections import Counter, defaultdict, deque
 from contextlib import asynccontextmanager
@@ -53,29 +55,55 @@ class SettingsPayload(BaseModel):
 # burst above the configured limit after each deploy.
 _RATE_WINDOW: dict[str, deque[float]] = defaultdict(deque)
 
+# uvicorn configures this logger, so INFO lines show up in the server output.
+logger = logging.getLogger("uvicorn.error")
+MODEL_TYPES = ("classical", "bert", "guard")
+
+
+def _heavy_models_enabled() -> bool:
+    return os.environ.get("ENABLE_HEAVY_MODELS", "false").lower() == "true"
+
+
+def _load_analyzer(app: FastAPI, model_type: str, **kwargs) -> None:
+    t0 = time.monotonic()
+    try:
+        analyzer = PromptAnalyzer(model_type=model_type, **kwargs)
+    except Exception as exc:
+        reason = f"{type(exc).__name__}: {exc}"
+        app.state.model_status[model_type] = {"available": False, "reason": reason, "source": None}
+        logger.warning("Model '%s' failed to load: %s", model_type, reason)
+        return
+    app.state.analyzers[model_type] = analyzer
+    app.state.model_status[model_type] = {"available": True, "reason": None, "source": analyzer.source}
+    logger.info("Model '%s' loaded from %s in %.1fs", model_type, analyzer.source, time.monotonic() - t0)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    import os
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
-    app.state.models_loaded = False
     app.state.analyzers = {}
-    try:
-        app.state.analyzers["classical"] = PromptAnalyzer(model_type="classical", escalate_on_uncertain=True)
-    except Exception:
-        pass
-    # Skip loading heavy transformer models on memory-constrained deployments
-    if os.environ.get("ENABLE_HEAVY_MODELS", "false").lower() == "true":
-        try:
-            app.state.analyzers["bert"] = PromptAnalyzer(model_type="bert")
-        except Exception:
-            pass
-        try:
-            app.state.analyzers["guard"] = PromptAnalyzer(model_type="guard")
-        except Exception:
-            pass
+    app.state.model_status = {}
+    # Heavy transformer models are opt-in: they need torch/transformers (requirements-heavy.txt)
+    # and roughly 1.5-3 GB RAM, more than small hosting tiers provide.
+    if _heavy_models_enabled():
+        _load_analyzer(app, "bert")
+        _load_analyzer(app, "guard")
+    else:
+        reason = "Heavy models disabled: set ENABLE_HEAVY_MODELS=true (requires requirements-heavy.txt)."
+        for model_type in ("bert", "guard"):
+            app.state.model_status[model_type] = {"available": False, "reason": reason, "source": None}
+        logger.info("ENABLE_HEAVY_MODELS is not 'true'; skipping bert and guard.")
+    # Classical escalates uncertain SUSPICIOUS results to guard, but only when guard is
+    # already loaded (reusing it), so ENABLE_HEAVY_MODELS=false never loads ModernBERT.
+    guard = app.state.analyzers.get("guard")
+    _load_analyzer(app, "classical", escalate_on_uncertain=guard is not None, escalation_analyzer=guard)
     app.state.models_loaded = len(app.state.analyzers) > 0
+    logger.info(
+        "Models available: %s; unavailable: %s",
+        sorted(app.state.analyzers) or "none",
+        sorted(set(MODEL_TYPES) - set(app.state.analyzers)) or "none",
+    )
     yield
 
 
@@ -149,7 +177,27 @@ def _write_settings(settings: dict) -> None:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "models_loaded": bool(app.state.models_loaded), "version": "1.0.0"}
+    return {
+        "status": "ok",
+        "models_loaded": bool(app.state.models_loaded),
+        "heavy_models_enabled": _heavy_models_enabled(),
+        "models": {
+            model_type: {
+                "available": model_type in app.state.analyzers,
+                "reason": app.state.model_status.get(model_type, {}).get("reason"),
+            }
+            for model_type in MODEL_TYPES
+        },
+        "version": "1.0.0",
+    }
+
+
+def _get_analyzer(model_type: str) -> PromptAnalyzer:
+    analyzer = app.state.analyzers.get(model_type)
+    if analyzer is None:
+        reason = app.state.model_status.get(model_type, {}).get("reason") or "not loaded"
+        raise HTTPException(status_code=503, detail=f"Model '{model_type}' is unavailable: {reason}")
+    return analyzer
 
 
 @app.post("/predict")
@@ -160,12 +208,8 @@ async def predict(
 ) -> dict:
     request.state.api_key_id = api_key.id
     await _enforce_rate_limit(api_key)
-    if not app.state.models_loaded:
-        raise HTTPException(status_code=503, detail="Models are not loaded.")
     t0 = time.monotonic()
-    analyzer = app.state.analyzers.get(payload.model)
-    if not analyzer:
-        raise HTTPException(status_code=503, detail=f"Model '{payload.model}' unavailable.")
+    analyzer = _get_analyzer(payload.model)
     result = await run_in_threadpool(analyzer.predict, payload.text)
     latency_ms = (time.monotonic() - t0) * 1000
     asyncio.create_task(_log_prediction(result, payload, api_key, latency_ms))
@@ -189,13 +233,9 @@ async def batch_predict(
 ) -> list[dict]:
     request.state.api_key_id = api_key.id
     await _enforce_rate_limit(api_key)
-    if not app.state.models_loaded:
-        raise HTTPException(status_code=503, detail="Models are not loaded.")
     if not payload.texts:
         raise HTTPException(status_code=400, detail="texts cannot be empty.")
-    analyzer = app.state.analyzers.get(payload.model)
-    if not analyzer:
-        raise HTTPException(status_code=503, detail=f"Model '{payload.model}' unavailable.")
+    analyzer = _get_analyzer(payload.model)
     t0 = time.monotonic()
     predictions = await run_in_threadpool(analyzer.batch_predict, payload.texts)
     total_ms = (time.monotonic() - t0) * 1000

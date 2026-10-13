@@ -165,7 +165,9 @@ python run_pipeline.py
 python -m src.load_data
 python -m src.train_classical
 python -m src.train_bert
-python -m src.evaluate
+python -m src.train_guard_model
+python -m src.evaluate          # compares all three models
+python paper_results.py         # same table as Markdown/LaTeX in artifacts/paper/
 python -m src.explain
 python -m src.robustness
 
@@ -182,11 +184,73 @@ npm ci && npm run dev
 
 ---
 
+### Transformer models (bert, guard)
+
+`bert` (DistilBERT) and `guard` (ModernBERT-base) are optional. The default API and
+Docker image serve only the classical model.
+
+**Train.** Both scripts accept `--epochs`, `--batch-size`, `--seed`, `--learning-rate`,
+`--max-length` (see `--help`). They save model, tokenizer and `metrics.json` (accuracy,
+weighted P/R/F1, per-class F1, ECE) to `models/<name>/` and `artifacts/<name>_metrics.json`,
+then run a sanity check on the prompts in `src/sanity_prompts.py`. If the model predicts a
+single class for all of them, the run fails and the weights are not saved.
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cpu   # or a CUDA wheel on a GPU box
+pip install -r requirements.txt
+python -m src.load_data
+
+# Smoke test (minutes on CPU; writes to artifacts/smoke/, never touches models/)
+python -m src.train_bert --max-samples 64 --epochs 1 --batch-size 8
+python -m src.train_guard_model --max-samples 64 --epochs 1 --batch-size 8
+
+# Full runs (a GPU is strongly recommended, especially for ModernBERT)
+python -m src.train_bert --epochs 3 --batch-size 16 --seed 42
+python -m src.train_guard_model --epochs 3 --batch-size 16 --seed 42
+```
+
+ModernBERT needs `transformers>=4.48`. The guard script downloads `answerdotai/ModernBERT-base`
+(~600 MB) and exits with a clear message when offline or out of memory.
+
+**Host the weights on the Hugging Face Hub.** `models/bert_model` and `models/guard_model`
+in git are Git LFS pointer stubs; Docker and Render builds do not use them.
+
+```bash
+export HF_TOKEN=hf_...   # write token
+python -m src.train_bert --push-to-hub <user>/promptguard-bert          # private by default
+python -m src.train_guard_model --push-to-hub <user>/promptguard-guard
+```
+
+At runtime the API loads `BERT_MODEL_ID` / `GUARD_MODEL_ID` (Hub repo id or local path;
+`HF_TOKEN` for private repos) and falls back to `models/bert_model` / `models/guard_model`
+when those hold real weights.
+
+**Serve.**
+
+```bash
+docker build -f Dockerfile.backend --build-arg INSTALL_HEAVY=1 -t promptguard-api:heavy .
+docker run -p 8000:8000 -e ENABLE_HEAVY_MODELS=true -e WEB_CONCURRENCY=1   -e BERT_MODEL_ID=<user>/promptguard-bert -e GUARD_MODEL_ID=<user>/promptguard-guard   -e HF_TOKEN=hf_... -e DATABASE_URL=... -e ADMIN_SECRET_KEY=... promptguard-api:heavy
+```
+
+With docker compose, set `INSTALL_HEAVY=1`, `ENABLE_HEAVY_MODELS=true` and the model ids in `.env`.
+`GET /health` reports which models loaded (and why the others did not); `/predict` returns
+503 with that reason for an unavailable model. The dashboard playground and the extension
+options page let you pick `bert` / `guard` once the backend has them.
+
+**Memory.** Plan for roughly 1.5-3 GB RAM per worker with both models loaded (estimate, not
+measured). Render's free tier (512 MB) is too small; ModernBERT needs a 2 GB+ instance.
+`render.yaml` keeps heavy models off and documents how to enable them.
+
+---
+
 ## API Usage
 
 ### Health check
 ```bash
 curl http://127.0.0.1:8000/health
+# {"status":"ok","models_loaded":true,"heavy_models_enabled":false,
+#  "models":{"classical":{"available":true,"reason":null},
+#            "bert":{"available":false,"reason":"Heavy models disabled: ..."}, ...}, ...}
 ```
 
 ### Single prediction

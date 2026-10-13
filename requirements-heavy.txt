@@ -1,0 +1,15 @@
+# Extra dependencies for serving/training the bert (DistilBERT) and guard (ModernBERT)
+# models in the API. Install ON TOP of requirements-render.txt. (requirements.txt, used for
+# training, already includes these plus datasets/accelerate.)
+#
+# Install the CPU-only torch wheel first, otherwise pip pulls the multi-GB CUDA build:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements-heavy.txt
+#
+# Memory: plan for roughly 1.5-3 GB RAM with both models loaded in one worker
+# (DistilBERT ~66M params, ModernBERT-base ~149M params, plus the torch runtime).
+# Render's free tier (512 MB) is too small for either model; ModernBERT needs a
+# 2 GB+ instance. These are estimates - measure with your traffic before sizing.
+torch>=2.1
+# ModernBERT was added in transformers 4.48.0; 5.0 is a breaking major release.
+transformers>=4.48,<5

@@ -1,0 +1,14 @@
+# Keep build contexts small and never ship Git LFS pointer stubs into an image.
+.git
+.venv
+.venv-linux
+**/__pycache__
+**/node_modules
+artifacts
+data
+dashboard
+extension
+models/bert_model
+models/guard_model
+models/*_checkpoints
+.env

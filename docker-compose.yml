@@ -17,9 +17,19 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backend
+      args:
+        # 1 = install CPU torch + transformers for the bert/guard models.
+        INSTALL_HEAVY: ${INSTALL_HEAVY:-0}
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@postgres/promptguard
       ADMIN_SECRET_KEY: ${ADMIN_SECRET_KEY}
+      ENABLE_HEAVY_MODELS: ${ENABLE_HEAVY_MODELS:-false}
+      BERT_MODEL_ID: ${BERT_MODEL_ID:-}
+      GUARD_MODEL_ID: ${GUARD_MODEL_ID:-}
+      HF_TOKEN: ${HF_TOKEN:-}
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+    volumes:
+      - hf-cache:/app/.cache/huggingface
     ports:
       - "8000:8000"
     depends_on:
@@ -46,3 +56,4 @@ services:
 
 volumes:
   pgdata:
+  hf-cache:

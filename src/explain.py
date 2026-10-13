@@ -119,13 +119,11 @@ def _merge_subword_scores(tokens: list[str], scores: list[float]) -> dict[str, f
 def get_token_importance(text: str) -> dict[str, float]:
     if not BERT_EXPLAIN_AVAILABLE:
         return {}
-    root = Path(__file__).resolve().parents[1]
-    bert_dir = root / "models" / "bert_model"
-    if not bert_dir.exists():
-        raise FileNotFoundError(f"BERT model directory not found at {bert_dir}.")
+    from src.model_sources import resolve_model_source
 
-    tokenizer = DistilBertTokenizerFast.from_pretrained(str(bert_dir))
-    model = DistilBertForSequenceClassification.from_pretrained(str(bert_dir), output_attentions=True)
+    source = resolve_model_source("bert")  # BERT_MODEL_ID, else models/bert_model
+    tokenizer = DistilBertTokenizerFast.from_pretrained(source)
+    model = DistilBertForSequenceClassification.from_pretrained(source, output_attentions=True)
     model.eval()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

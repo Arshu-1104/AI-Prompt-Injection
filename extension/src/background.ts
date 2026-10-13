@@ -1,4 +1,4 @@
-﻿type PredictRequest = { type: "predict"; payload: { text: string } };
+type PredictRequest = { type: "predict"; payload: { text: string } };
 type HealthRequest = { type: "health_check"; payload: { endpoint: string } };
 type MessageRequest = PredictRequest | HealthRequest;
 type MessageResponse =
@@ -7,7 +7,9 @@ type MessageResponse =
   | { status: "timeout" }
   | { status: "error"; message: string };
 
-type StoredConfig = { endpoint?: string; apiKey?: string; enabled?: boolean };
+type StoredConfig = { endpoint?: string; apiKey?: string; enabled?: boolean; model?: string };
+
+const MODELS = ["classical", "bert", "guard"];
 
 function withTimeout(ms: number): { signal: AbortSignal; cancel: () => void } {
   const controller = new AbortController();
@@ -16,18 +18,24 @@ function withTimeout(ms: number): { signal: AbortSignal; cancel: () => void } {
 }
 
 async function handlePredict(text: string): Promise<MessageResponse> {
-  const config = await chrome.storage.sync.get({ enabled: true, endpoint: "", apiKey: "" }) as StoredConfig;
+  const config = await chrome.storage.sync.get({ enabled: true, endpoint: "", apiKey: "", model: "classical" }) as StoredConfig;
+  const model = MODELS.includes(config.model ?? "") ? config.model : "classical";
   if (config.enabled === false || !config.endpoint || !config.apiKey) return { status: "unconfigured" };
   const timeout = withTimeout(3000);
   try {
     const response = await fetch(`${config.endpoint.replace(/\/$/, "")}/predict`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.apiKey}` },
-      body: JSON.stringify({ text, model: "classical" }),
+      body: JSON.stringify({ text, model }),
       signal: timeout.signal,
     });
     timeout.cancel();
-    if (!response.ok) return { status: "error", message: `HTTP ${response.status}` };
+    if (!response.ok) {
+      // 503 carries the reason, e.g. the selected model is not loaded on the backend.
+      const body = await response.json().catch(() => null) as { detail?: unknown } | null;
+      const detail = typeof body?.detail === "string" ? `: ${body.detail}` : "";
+      return { status: "error", message: `HTTP ${response.status}${detail}` };
+    }
     const data = await response.json() as { label: string; confidence: number; risk_score: number; attack_patterns: string[] };
     await chrome.storage.local.set({ lastResult: data });
     return { status: "ok", label: data.label, confidence: data.confidence, risk_score: data.risk_score, attack_patterns: data.attack_patterns };

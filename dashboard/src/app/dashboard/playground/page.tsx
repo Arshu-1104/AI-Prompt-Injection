@@ -1,16 +1,35 @@
-﻿"use client";
+"use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { RiskBadge, type RiskLabel } from "@/components/RiskBadge";
 import { TokenHighlight } from "@/components/TokenHighlight";
 
 type Result = { label: RiskLabel; confidence: number; risk_score: number; attack_patterns: string[]; explanation: string; token_highlights?: Record<string, number> };
+type ModelStatus = { available: boolean; reason?: string | null };
+type Health = { models?: Record<string, ModelStatus> };
+
+const MODEL_IDS = ["classical", "bert", "guard"] as const;
 
 export default function PlaygroundPage() {
   const [text, setText] = useState("");
   const [model, setModel] = useState("classical");
   const [result, setResult] = useState<Result | null>(null);
   const [error, setError] = useState("");
+  // null = still checking /health
+  const [models, setModels] = useState<Record<string, ModelStatus> | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/proxy/health")
+      .then(async (response) => (response.ok ? ((await response.json()) as Health) : null))
+      .catch(() => null)
+      .then((health) => {
+        if (cancelled) return;
+        // Older backends have no per-model status; assume only classical is served.
+        setModels(health?.models ?? { classical: { available: true } });
+      });
+    return () => { cancelled = true; };
+  }, []);
 
   async function analyze() {
     setError("");
@@ -21,7 +40,9 @@ export default function PlaygroundPage() {
       body: JSON.stringify({ text, model }),
     });
     if (!response.ok) {
-      setError(`Request failed: ${response.status}`);
+      const body = await response.json().catch(() => null) as { detail?: unknown } | null;
+      const detail = typeof body?.detail === "string" ? `: ${body.detail}` : "";
+      setError(`Request failed (${response.status})${detail}`);
       return;
     }
     setResult(await response.json() as Result);
@@ -32,16 +53,17 @@ export default function PlaygroundPage() {
       <h1 className="text-2xl font-semibold">Playground</h1>
       <textarea className="min-h-40 w-full rounded-md border bg-white p-3" value={text} onChange={(event) => setText(event.target.value)} />
       <div className="flex gap-4">
-        {[
-          { id: "classical", available: true },
-          { id: "bert", available: false },
-          { id: "guard", available: false },
-        ].map((item) => (
-          <label key={item.id} className={`flex items-center gap-2 text-sm ${item.available ? "" : "text-slate-400"}`}>
-            <input type="radio" checked={model === item.id} disabled={!item.available} onChange={() => item.available && setModel(item.id)} />
-            {item.id}{!item.available ? " (coming soon)" : ""}
-          </label>
-        ))}
+        {MODEL_IDS.map((id) => {
+          const status = models?.[id];
+          const available = status?.available === true;
+          const note = models === null ? " (checking...)" : available ? "" : " (unavailable)";
+          return (
+            <label key={id} title={available ? undefined : status?.reason ?? undefined} className={`flex items-center gap-2 text-sm ${available ? "" : "text-slate-400"}`}>
+              <input type="radio" checked={model === id} disabled={!available} onChange={() => available && setModel(id)} />
+              {id}{note}
+            </label>
+          );
+        })}
       </div>
       <button className="rounded-md bg-slate-950 px-4 py-2 text-white" onClick={analyze}>Analyze</button>
       {error ? <p className="text-sm text-malicious">{error}</p> : null}

@@ -1,30 +1,40 @@
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import joblib
 import numpy as np
 try:
     import torch
-    from transformers import (
-        AutoModelForSequenceClassification,
-        AutoTokenizer,
-        DistilBertForSequenceClassification,
-        DistilBertTokenizerFast,
-    )
+    from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
     BERT_RUNTIME_AVAILABLE = True
-except Exception:
+    BERT_RUNTIME_ERROR = ""
+except Exception as _exc:  # ImportError, or OSError when a native DLL is blocked
     BERT_RUNTIME_AVAILABLE = False
+    BERT_RUNTIME_ERROR = f"torch/transformers not importable ({type(_exc).__name__}: {_exc})"
 
+from src.model_sources import resolve_model_source
 from src.preprocess import clean_text, highlight_attack_patterns
 from src.explain import _merge_subword_scores
-
-import warnings
 from src.train_classical import RuleBasedClassifier
 
 
 LABELS = ["SAFE", "SUSPICIOUS", "MALICIOUS"]
+MAX_LENGTH = 256
+
+
+def _load_transformer(model_type: str, device, **model_kwargs):
+    """Load (tokenizer, model) for 'bert' or 'guard' from the Hub or models/."""
+    if not BERT_RUNTIME_AVAILABLE:
+        raise RuntimeError(BERT_RUNTIME_ERROR)
+    source = resolve_model_source(model_type)
+    tokenizer = AutoTokenizer.from_pretrained(source)
+    model = AutoModelForSequenceClassification.from_pretrained(source, **model_kwargs)
+    model.to(device)
+    model.eval()
+    return tokenizer, model, source
 
 
 def _explain_label(label: str, patterns: list[str], confidence: float) -> str:
@@ -45,10 +55,18 @@ def _explain_label(label: str, patterns: list[str], confidence: float) -> str:
 
 
 class PromptAnalyzer:
-    def __init__(self, model_type: str = "classical", escalate_on_uncertain: bool = False) -> None:
+    def __init__(
+        self,
+        model_type: str = "classical",
+        escalate_on_uncertain: bool = False,
+        escalation_analyzer: "PromptAnalyzer | None" = None,
+        device: str | None = None,
+    ) -> None:
+        """*escalation_analyzer*: an already-loaded guard analyzer whose model the
+        classical analyzer reuses for escalation instead of loading a second copy.
+        *device*: torch device for transformer models (default: cuda if available)."""
         self.model_type = model_type.lower()
-        root = Path(__file__).resolve().parents[1]
-        models_dir = root / "models"
+        models_dir = Path(__file__).resolve().parents[1] / "models"
         if self.model_type not in {"classical", "bert", "guard"}:
             raise ValueError("model_type must be 'classical', 'bert', or 'guard'.")
 
@@ -59,7 +77,10 @@ class PromptAnalyzer:
         self.guard_model = None
         self.escalate_on_uncertain = escalate_on_uncertain
         self.is_rule_based_fallback = False
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu") if BERT_RUNTIME_AVAILABLE else None
+        self.source = None
+        self.device = None
+        if BERT_RUNTIME_AVAILABLE:
+            self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
 
         if self.model_type == "classical":
             model_path = models_dir / "classical_model.pkl"
@@ -74,35 +95,22 @@ class PromptAnalyzer:
                     "installed to fix this. Predictions will be inaccurate.",
                     stacklevel=2,
                 )
-            if self.escalate_on_uncertain and BERT_RUNTIME_AVAILABLE:
-                guard_dir = models_dir / "guard_model"
-                if guard_dir.exists():
-                    self.guard_tokenizer = AutoTokenizer.from_pretrained(str(guard_dir))
-                    self.guard_model = AutoModelForSequenceClassification.from_pretrained(str(guard_dir))
-                    self.guard_model.to(self.device)
-                    self.guard_model.eval()
+            self.source = str(model_path)
+            if escalation_analyzer is not None:
+                self.guard_tokenizer = escalation_analyzer.guard_tokenizer
+                self.guard_model = escalation_analyzer.guard_model
+            elif self.escalate_on_uncertain and BERT_RUNTIME_AVAILABLE:
+                # Escalation is optional: classical must still load without guard weights.
+                try:
+                    self.guard_tokenizer, self.guard_model, _ = _load_transformer("guard", self.device)
+                except Exception as exc:
+                    warnings.warn(f"Guard escalation disabled: {exc}", stacklevel=2)
         elif self.model_type == "bert":
-            if not BERT_RUNTIME_AVAILABLE:
-                raise RuntimeError("BERT runtime unavailable due to blocked dependencies on this environment.")
-            bert_dir = models_dir / "bert_model"
-            if not bert_dir.exists():
-                raise FileNotFoundError(f"BERT model missing at {bert_dir}.")
-            self.bert_tokenizer = DistilBertTokenizerFast.from_pretrained(str(bert_dir))
-            self.bert_model = DistilBertForSequenceClassification.from_pretrained(
-                str(bert_dir), output_attentions=True
+            self.bert_tokenizer, self.bert_model, self.source = _load_transformer(
+                "bert", self.device, output_attentions=True
             )
-            self.bert_model.to(self.device)
-            self.bert_model.eval()
         else:
-            if not BERT_RUNTIME_AVAILABLE:
-                raise RuntimeError("Guard model runtime unavailable due to blocked dependencies on this environment.")
-            guard_dir = models_dir / "guard_model"
-            if not guard_dir.exists():
-                raise FileNotFoundError(f"Guard model missing at {guard_dir}.")
-            self.guard_tokenizer = AutoTokenizer.from_pretrained(str(guard_dir))
-            self.guard_model = AutoModelForSequenceClassification.from_pretrained(str(guard_dir))
-            self.guard_model.to(self.device)
-            self.guard_model.eval()
+            self.guard_tokenizer, self.guard_model, self.source = _load_transformer("guard", self.device)
 
     def _predict_classical(self, text: str) -> tuple[str, float]:
         if self.classical_model is None:
@@ -117,14 +125,14 @@ class PromptAnalyzer:
         if not BERT_RUNTIME_AVAILABLE or self.device is None:
             raise RuntimeError("BERT runtime unavailable.")
         encoded = self.bert_tokenizer(
-            text, truncation=True, padding="max_length", max_length=256, return_tensors="pt"
+            text, truncation=True, max_length=MAX_LENGTH, return_tensors="pt"
         )
         encoded = {k: v.to(self.device) for k, v in encoded.items()}
         with torch.no_grad():
             logits = self.bert_model(**encoded).logits
-            probs = torch.softmax(logits, dim=1).squeeze(0).cpu().numpy()
+            probs = torch.softmax(logits.float(), dim=1).squeeze(0).cpu().numpy()
         idx = int(np.argmax(probs))
-        return LABELS[idx], float(probs[idx])
+        return str(self.bert_model.config.id2label[idx]), float(probs[idx])
 
     def _predict_guard(self, text: str) -> tuple[str, float]:
         if self.guard_model is None or self.guard_tokenizer is None:
@@ -132,14 +140,14 @@ class PromptAnalyzer:
         if not BERT_RUNTIME_AVAILABLE or self.device is None:
             raise RuntimeError("Guard model runtime unavailable.")
         encoded = self.guard_tokenizer(
-            text, truncation=True, padding="max_length", max_length=256, return_tensors="pt"
+            text, truncation=True, max_length=MAX_LENGTH, return_tensors="pt"
         )
         encoded = {k: v.to(self.device) for k, v in encoded.items()}
         with torch.no_grad():
             logits = self.guard_model(**encoded).logits
-            probs = torch.softmax(logits, dim=1).squeeze(0).cpu().numpy()
+            probs = torch.softmax(logits.float(), dim=1).squeeze(0).cpu().numpy()
         idx = int(np.argmax(probs))
-        return LABELS[idx], float(probs[idx])
+        return str(self.guard_model.config.id2label[idx]), float(probs[idx])
 
     def _get_token_importance(self, text: str) -> dict[str, float]:
         if self.bert_model is None or self.bert_tokenizer is None:
@@ -147,7 +155,7 @@ class PromptAnalyzer:
         if not BERT_RUNTIME_AVAILABLE or self.device is None:
             return {}
         encoded = self.bert_tokenizer(
-            text, truncation=True, padding="max_length", max_length=256, return_tensors="pt"
+            text, truncation=True, max_length=MAX_LENGTH, return_tensors="pt"
         )
         encoded = {k: v.to(self.device) for k, v in encoded.items()}
         with torch.no_grad():
