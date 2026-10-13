@@ -241,10 +241,9 @@ def run_transformer(model_type, seeds, test_df, categories, latency_texts, args)
     runs, latency = [], None
     for seed in seeds:
         out_dir = RUNS_DIR / model_type / f"seed_{seed}"
-        cli = [
-            "--seed", str(seed), "--epochs", str(args.epochs), "--batch-size", str(args.batch_size),
-            "--output-dir", str(out_dir),
-        ]
+        cli = ["--seed", str(seed), "--epochs", str(args.epochs), "--output-dir", str(out_dir)]
+        if args.batch_size:
+            cli += ["--batch-size", str(args.batch_size)]
         if args.max_samples:
             cli += ["--max-samples", str(args.max_samples)]
         print(f"[{model_type}] seed {seed}: training -> {out_dir}")
@@ -509,7 +508,7 @@ def main(argv: list[str] | None = None) -> dict:
     parser.add_argument("--guard-seeds", type=int, default=1, help="Seeds for guard; ModernBERT is expensive (default: 1).")
     parser.add_argument("--base-seed", type=int, default=42)
     parser.add_argument("--epochs", type=float, default=3)
-    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--batch-size", type=int, default=None, help="Default: the training script's (32 GPU / 16 CPU).")
     parser.add_argument("--max-samples", type=int, default=None, help="Smoke run: cap transformer train/test rows.")
     parser.add_argument("--latency-samples", type=int, default=200)
     parser.add_argument("--protectai", action="store_true", help=f"Also evaluate {PROTECTAI_ID}.")

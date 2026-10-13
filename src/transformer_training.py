@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import shutil
 import sys
 import time
@@ -42,10 +43,12 @@ class ModelSpec:
 def build_arg_parser(spec: ModelSpec) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=f"Fine-tune {spec.base_model} as the '{spec.name}' model.")
     parser.add_argument("--epochs", type=float, default=3, help="Training epochs (default: 3).")
-    parser.add_argument("--batch-size", type=int, default=16, help="Per-device train/eval batch size (default: 16).")
+    parser.add_argument("--batch-size", type=int, default=None,
+                        help="Per-device train/eval batch size (default: 32 with a GPU, 16 on CPU).")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for init, shuffling and sampling (default: 42).")
     parser.add_argument("--learning-rate", type=float, default=5e-5, help="Peak learning rate (default: 5e-5).")
-    parser.add_argument("--max-length", type=int, default=256, help="Max tokens per prompt (default: 256).")
+    parser.add_argument("--max-length", type=int, default=128,
+                        help="Max tokens per prompt (default: 128). The share of truncated rows is reported.")
     parser.add_argument(
         "--max-samples",
         type=int,
@@ -64,6 +67,13 @@ def build_arg_parser(spec: ModelSpec) -> argparse.ArgumentParser:
         help="After a successful run, upload model, tokenizer and metrics.json to this Hugging Face Hub repo (needs HF_TOKEN with write access).",
     )
     parser.add_argument("--hub-public", action="store_true", help="Create the Hub repo as public (default: private).")
+    parser.add_argument("--checkpoint-dir", type=Path, default=None,
+                        help="Where epoch checkpoints go (default: <output-dir>_checkpoints). On Colab/Kaggle point "
+                             "this at persistent storage such as Google Drive so --resume works after a disconnect.")
+    parser.add_argument("--resume", action="store_true", help="Resume from the latest checkpoint in --checkpoint-dir.")
+    parser.add_argument("--keep-checkpoints", action="store_true", help="Keep checkpoints after a successful run.")
+    parser.add_argument("--early-stopping-patience", type=int, default=1,
+                        help="Stop after this many epochs without a better validation F1 (default: 1).")
     return parser
 
 
@@ -261,6 +271,55 @@ def run_sanity_check(torch, model, tokenizer, max_length: int) -> dict:
     return result
 
 
+TRUNCATION_WARN_PCT = 2.0
+NAN_CHECK_STEPS = 50
+
+
+def token_length_report(tokenizer, texts: list[str], max_length: int) -> dict:
+    """Token-length distribution of the training texts and the share that --max-length truncates."""
+    lengths = np.array([len(ids) for ids in tokenizer(list(texts), truncation=False)["input_ids"]])
+    report = {
+        "max_length": max_length,
+        **{f"p{q}": int(np.percentile(lengths, q)) for q in (50, 90, 95, 99)},
+        "max": int(lengths.max()),
+        "truncated_pct": float((lengths > max_length).mean() * 100),
+    }
+    print(
+        f"token lengths: p50={report['p50']} p90={report['p90']} p95={report['p95']} p99={report['p99']} "
+        f"max={report['max']}; {report['truncated_pct']:.2f}% of rows exceed --max-length {max_length}"
+    )
+    if report["truncated_pct"] > TRUNCATION_WARN_PCT:
+        print(f"WARNING: more than {TRUNCATION_WARN_PCT}% of training rows are truncated; consider a larger --max-length.")
+    return report
+
+
+def _callbacks(transformers):
+    """NaN-loss guard and per-epoch wall-clock timer."""
+
+    class NaNGuard(transformers.TrainerCallback):
+        def on_log(self, args, state, control, logs=None, **kwargs):
+            loss = (logs or {}).get("loss")
+            if loss is not None and state.global_step <= NAN_CHECK_STEPS and not math.isfinite(float(loss)):
+                raise TrainingError(
+                    f"Loss is {loss} at step {state.global_step} (within the first {NAN_CHECK_STEPS} steps). "
+                    "Try a lower --learning-rate or fp32 (unset CUDA mixed precision)."
+                )
+
+    class EpochTimer(transformers.TrainerCallback):
+        def __init__(self):
+            self.epoch_seconds: list[float] = []
+            self._start = None
+
+        def on_epoch_begin(self, args, state, control, **kwargs):
+            self._start = time.monotonic()
+
+        def on_epoch_end(self, args, state, control, **kwargs):
+            if self._start is not None:
+                self.epoch_seconds.append(round(time.monotonic() - self._start, 1))
+
+    return NaNGuard(), EpochTimer()
+
+
 # --------------------------------------------------------------------------- training
 
 
@@ -308,22 +367,28 @@ def train_model(spec: ModelSpec, args: argparse.Namespace, shared_outputs: bool 
         artifacts_dir = ROOT / "artifacts"
         output_dir = args.output_dir or ROOT / "models" / spec.output_dirname
     output_dir = Path(output_dir)
-    checkpoint_dir = output_dir.parent / f"{output_dir.name}_checkpoints"
+    checkpoint_dir = Path(args.checkpoint_dir) if args.checkpoint_dir else output_dir.parent / f"{output_dir.name}_checkpoints"
 
     transformers.set_seed(args.seed)
     cuda = torch.cuda.is_available()
     device = torch.cuda.get_device_name(0) if cuda else "CPU"
+    if args.batch_size is None:
+        args.batch_size = 32 if cuda else 16
+    bf16 = cuda and torch.cuda.is_bf16_supported()
+    fp16 = cuda and not bf16
+    precision = "bf16" if bf16 else "fp16" if fp16 else "fp32"
     train_df, val_df, test_df, provenance = _load_splits(args)
     print(
         f"[{spec.name}] base={spec.base_model} device={device} torch={torch.__version__} "
         f"transformers={transformers.__version__}\n"
         f"[{spec.name}] train={len(train_df)} validation={len(val_df)} test={len(test_df)} epochs={args.epochs} "
-        f"batch={args.batch_size} lr={args.learning_rate} seed={args.seed}"
+        f"batch={args.batch_size} lr={args.learning_rate} seed={args.seed} precision={precision} max_length={args.max_length}"
         + (f"  SMOKE TEST (--max-samples {args.max_samples})" if smoke else "")
     )
     print(f"[{spec.name}] train label counts: {train_df['label'].value_counts().to_dict()}")
 
     tokenizer, model = _load_base_model(spec, transformers)
+    lengths = token_length_report(tokenizer, train_df["text"].tolist(), args.max_length)
     train_items = _encode(tokenizer, train_df, args.max_length)
     # Checkpoint selection uses the official validation split; test is only for the final report.
     eval_items = _encode(tokenizer, val_df, args.max_length)
@@ -351,12 +416,18 @@ def train_model(spec: ModelSpec, args: argparse.Namespace, shared_outputs: bool 
         save_strategy="no" if smoke else "epoch",
         load_best_model_at_end=not smoke,
         metric_for_best_model="f1",
-        save_total_limit=1,
-        logging_steps=10 if smoke else 50,
-        bf16=cuda and torch.cuda.is_bf16_supported(),
-        fp16=cuda and not torch.cuda.is_bf16_supported(),
+        save_total_limit=2,
+        logging_steps=10,
+        logging_first_step=True,
+        group_by_length=True,  # with dynamic padding: batches of similar length, less padding
+        bf16=bf16,
+        fp16=fp16,
         report_to=[],
     )
+    nan_guard, epoch_timer = _callbacks(transformers)
+    callbacks = [nan_guard, epoch_timer]
+    if not smoke:
+        callbacks.append(transformers.EarlyStoppingCallback(early_stopping_patience=args.early_stopping_patience))
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -365,11 +436,17 @@ def train_model(spec: ModelSpec, args: argparse.Namespace, shared_outputs: bool 
         data_collator=DataCollatorWithPadding(tokenizer),
         processing_class=tokenizer,
         compute_metrics=compute_metrics,
+        callbacks=callbacks,
     )
 
     started = time.monotonic()
     try:
-        trainer.train()
+        try:
+            trainer.train(resume_from_checkpoint=True if args.resume else None)
+        except ValueError as exc:
+            if args.resume and "checkpoint" in str(exc).lower():
+                raise TrainingError(f"--resume: no checkpoint found in {checkpoint_dir} ({exc}).") from exc
+            raise
         model = trainer.model
         probs = _predict_probs(torch, model, tokenizer, test_df["text"].tolist(), args.max_length, args.batch_size)
     except Exception as exc:
@@ -398,7 +475,16 @@ def train_model(spec: ModelSpec, args: argparse.Namespace, shared_outputs: bool 
             "seed": args.seed,
         },
         "device": device,
+        "precision": precision,
+        "token_lengths": lengths,
         "train_seconds": round(train_seconds, 1),
+        "timing": {"epoch_seconds": epoch_timer.epoch_seconds, "total_seconds": round(train_seconds, 1)},
+        "early_stopping": None if smoke else {
+            "patience": args.early_stopping_patience,
+            "epochs_completed": float(trainer.state.epoch or 0),
+            "best_validation_f1": trainer.state.best_metric,
+        },
+        "resumed": bool(args.resume),
         "versions": {"torch": torch.__version__, "transformers": transformers.__version__},
         "sanity_check": sanity,
     }
@@ -432,7 +518,8 @@ def train_model(spec: ModelSpec, args: argparse.Namespace, shared_outputs: bool 
         combined = json.loads(combined_path.read_text(encoding="utf-8")) if combined_path.exists() else {}
         combined[spec.output_dirname] = {k: v for k, v in report.items() if k != "sanity_check"}
         _write_json(combined_path, combined)
-    shutil.rmtree(checkpoint_dir, ignore_errors=True)
+    if not args.keep_checkpoints:
+        shutil.rmtree(checkpoint_dir, ignore_errors=True)
     print(f"[{spec.name}] saved model + tokenizer + metrics.json to {output_dir}")
     print(f"[{spec.name}] metrics: {artifact_metrics_path}")
 
