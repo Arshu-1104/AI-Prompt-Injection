@@ -198,7 +198,7 @@ AI-Prompt-Injection/
 | Task | Hardware |
 |---|---|
 | Use the API, dashboard and Chrome extension (classical model) | CPU only; the default Docker image has no torch |
-| Serve bert / guard from published weights | CPU is enough (heavy image, roughly 1.5-3 GB RAM, estimate) |
+| Serve bert / guard from published weights | CPU is enough (heavy image 1551 MB, measured; roughly 1.5-3 GB RAM with both models loaded, estimate) |
 | Reproduce the evaluation from published weights (`python -m src.eval_only`) | CPU only, no training code |
 | Train classical | CPU, under a minute |
 | **Train bert / guard** | **A GPU**, one time. Free Colab or Kaggle is enough. CPU works but is slow: about 20 min per DistilBERT epoch and about 50 min per ModernBERT epoch on the dev laptop (smoke-run throughput, extrapolated) |
@@ -545,15 +545,28 @@ With docker compose, set `INSTALL_HEAVY=1`, `ENABLE_HEAVY_MODELS=true` and the m
 503 with that reason for an unavailable model. The dashboard playground and the extension
 options page let you pick `bert` / `guard` once the backend has them.
 
-**Memory.** Plan for roughly 1.5-3 GB RAM per worker with both models loaded (estimate, not
-measured). Render's free tier (512 MB) is too small; ModernBERT needs a 2 GB+ instance.
-The manual workflow `.github/workflows/heavy-docker-measure.yml` (Actions → "Heavy Docker image
-measurement" → Run workflow; never runs on push or pull request, uses no secrets) builds the heavy
-image and writes its size and `docker stats` memory, idle and after a few `/predict` calls, to the job
-summary. While the Hub repos are private it has no access to the bert/guard weights. It then
-measures the heavy image **without** those models (torch + transformers installed, classical
-serving) and says so in the summary. Once the repos are public, pass their ids as the workflow
-inputs to measure with both models loaded.
+**Memory and image size (measured, without bert and guard loaded).** Measured on a GitHub
+`ubuntu-24.04` runner (image 20261004.327.1) by the manual workflow
+`.github/workflows/heavy-docker-measure.yml`, run
+[38523684832](https://github.com/Arshu-1104/AI-Prompt-Injection/actions/runs/38523684832). The run
+was on the branch `followup/measured-docker-figures`; its image is the same as main's, because only
+the workflow file differs. The bert/guard Hub repos are private and the workflow uses no token, so
+**no transformer weights were loaded**: `/health` reported `classical` available and `bert` /
+`guard` as `weights_missing`, and the `/predict` calls used the classical model.
+
+| heavy image (`INSTALL_HEAVY=1`, `WEB_CONCURRENCY=1`) | measured |
+|---|---|
+| image size (`docker image inspect`) | 1551 MB |
+| memory at idle (`docker stats`) | 383.4 MiB |
+| memory after 4 `/predict` calls (classical) | 385.2 MiB |
+
+These are the heavy image's baseline (torch + transformers installed, classical serving). **With
+both models loaded, plan for roughly 1.5-3 GB RAM per worker. That figure is still an estimate, not
+a measurement.** Render's free tier (512 MB) is too small for the models; ModernBERT needs a 2 GB+
+instance. The workflow (Actions → "Heavy Docker image measurement" → Run workflow; never runs on
+push or pull request, uses no secrets) prints the table to the job log, adds it to the job summary
+and uploads it as the `heavy-docker-measurement` artifact. Once the repos are public, pass their
+ids as the workflow inputs to measure with both models loaded.
 `render.yaml` keeps heavy models off and documents how to enable them.
 
 ---
@@ -734,10 +747,12 @@ Features: model switcher, single prompt analysis, risk badge, confidence bar, pa
    "Research" (research use only) and HackAPrompt as CC BY 4.0, so the trained weights stay private
    until that is reviewed. The Qualifire benchmark is CC-BY-NC-4.0 (non-commercial): evaluation only,
    never training, never redistributed.
-8. **Memory figures for heavy models are estimates**, not measurements, until the heavy Docker image
-   is built and run (`docker stats`; see "Reproducing the results", B6, or the manual
-   `heavy-docker-measure` workflow). Docker was not available where these results were produced.
-   While the weights are private, that workflow measures the heavy image without bert/guard loaded.
+8. **Memory with bert and guard loaded is still an estimate** (roughly 1.5-3 GB per worker). The heavy
+   image itself was measured without those models: 1551 MB on disk, 383.4 MiB idle and 385.2 MiB
+   after `/predict` on a GitHub `ubuntu-24.04` runner (see Memory and image size). The models were not
+   loaded because the Hub repos are private and the workflow uses no token. Measuring with them
+   needs public repos (pass the ids as workflow inputs) or a local run with `HF_TOKEN` and
+   `docker stats`.
 9. **In-memory rate limit counters.** `_RATE_WINDOW` resets on restart, allowing a brief burst above
    the limit after each deploy. Move counters to Redis or a Postgres table for stricter enforcement.
 10. **Pattern counts in `/api/stats`** are aggregated in Python, since JSON arrays can't be counted
