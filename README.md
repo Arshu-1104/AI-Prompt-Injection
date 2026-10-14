@@ -523,6 +523,13 @@ options page let you pick `bert` / `guard` once the backend has them.
 
 **Memory.** Plan for roughly 1.5-3 GB RAM per worker with both models loaded (estimate, not
 measured). Render's free tier (512 MB) is too small; ModernBERT needs a 2 GB+ instance.
+The manual workflow `.github/workflows/heavy-docker-measure.yml` (Actions → "Heavy Docker image
+measurement" → Run workflow; never runs on push or pull request, uses no secrets) builds the heavy
+image and writes its size and `docker stats` memory, idle and after a few `/predict` calls, to the job
+summary. While the Hub repos are private it has no access to the bert/guard weights. It then
+measures the heavy image **without** those models (torch + transformers installed, classical
+serving) and says so in the summary. Once the repos are public, pass their ids as the workflow
+inputs to measure with both models loaded.
 `render.yaml` keeps heavy models off and documents how to enable them.
 
 ---
@@ -686,8 +693,9 @@ Features: model switcher, single prompt analysis, risk badge, confidence bar, pa
    until that is reviewed. The Qualifire benchmark is CC-BY-NC-4.0 (non-commercial): evaluation only,
    never training, never redistributed.
 8. **Memory figures for heavy models are estimates**, not measurements, until the heavy Docker image
-   is built and run (`docker stats`; see "Reproducing the results", B6). Docker was not available
-   where these results were produced.
+   is built and run (`docker stats`; see "Reproducing the results", B6, or the manual
+   `heavy-docker-measure` workflow). Docker was not available where these results were produced.
+   While the weights are private, that workflow measures the heavy image without bert/guard loaded.
 9. **In-memory rate limit counters.** `_RATE_WINDOW` resets on restart, allowing a brief burst above
    the limit after each deploy. Move counters to Redis or a Postgres table for stricter enforcement.
 10. **Pattern counts in `/api/stats`** are aggregated in Python, since JSON arrays can't be counted
