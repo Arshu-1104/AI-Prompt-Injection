@@ -91,3 +91,40 @@ def test_validation_threshold_prefers_half_on_ties():
 
     chosen = ee.best_validation_threshold(["SAFE", "MALICIOUS"], np.array([0.1, 0.9]))
     assert chosen["threshold"] == 0.5
+
+
+def _owner(**attrs):
+    from types import SimpleNamespace
+
+    owner = SimpleNamespace(**attrs)
+    owner.predict = lambda texts: None
+    return SimpleNamespace(__self__=owner)
+
+
+def test_weights_source_records_hub_repo_and_revision():
+    from types import SimpleNamespace
+
+    model = SimpleNamespace(config=SimpleNamespace(_commit_hash="abc123def"))
+    info = ee.weights_source(_owner(source="Arshu-110405/promptguard-guard", model_type="guard", guard_model=model))
+    assert info == {"source": "Arshu-110405/promptguard-guard", "loaded_from": "hub", "hub_revision": "abc123def"}
+    # TransformerPredictor (ProtectAI) keeps its model on .model
+    info = ee.weights_source(_owner(source="protectai/deberta-v3-base-prompt-injection-v2", model=model))
+    assert info["loaded_from"] == "hub" and info["hub_revision"] == "abc123def"
+
+
+def test_weights_source_records_local_path_without_revision(tmp_path):
+    from types import SimpleNamespace
+
+    weights = tmp_path / "seed_42"
+    weights.mkdir()
+    model = SimpleNamespace(config=SimpleNamespace(_commit_hash=None))
+    info = ee.weights_source(_owner(source=str(weights), model_type="bert", bert_model=model))
+    assert info["loaded_from"] == "local" and info["hub_revision"] is None
+    assert info["source"] == str(weights.resolve())
+    inside = ee.ROOT / "models" / "classical_model.pkl"
+    info = ee.weights_source(_owner(source=str(inside), model_type="classical"))
+    assert info == {"source": "models/classical_model.pkl", "loaded_from": "local", "hub_revision": None}
+
+
+def test_weights_source_unknown_owner():
+    assert ee.weights_source(lambda texts: None) == {"source": None, "loaded_from": None, "hub_revision": None}

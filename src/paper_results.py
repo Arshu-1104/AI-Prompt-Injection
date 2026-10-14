@@ -110,6 +110,7 @@ class TransformerPredictor:
 
         torch.set_num_threads(max(1, os.cpu_count() or 1))
         self.torch = torch
+        self.source = source
         self.tokenizer = AutoTokenizer.from_pretrained(source)
         self.model = AutoModelForSequenceClassification.from_pretrained(source).to("cpu").eval()
         # Trained PromptGuard models carry their training length; others default to 256.

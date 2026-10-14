@@ -5,7 +5,7 @@
 
 Datasets (pinned revisions):
 * xTRam1/safe-guard-prompt-injection, test split - no license stated on the card
-* deepset/prompt-injections, test split - Apache-2.0 (mostly German text)
+* deepset/prompt-injections, test split - Apache-2.0 (mixed English and German text)
 * qualifire/prompt-injections-benchmark, test split - CC-BY-NC-4.0 and gated
   (accept the terms on the Hub and set HF_TOKEN); skipped with a message otherwise
 
@@ -83,7 +83,7 @@ DATASETS = [
         revision="4f61ecb038e9c3fb77e21034b22511b523772cdd",
         split="test",
         license="Apache-2.0",
-        notes="Mostly German text; label meaning undocumented on the card; checked (1 = injection).",
+        notes="Mixed English and German text; label meaning undocumented on the card; checked (1 = injection).",
     ),
     ExternalDataset(
         name="qualifire/prompt-injections-benchmark",
@@ -270,6 +270,30 @@ def score_external(y_true: list[str], probs: np.ndarray, threshold: dict | None)
     return out
 
 
+def weights_source(predict) -> dict:
+    """Where a loaded model's weights came from, recorded at load time.
+
+    *predict* is a bound method of a PromptAnalyzer or TransformerPredictor.
+    Returns {"source": local path (relative to the repo when inside it) or Hub repo id,
+    "loaded_from": "local" | "hub", "hub_revision": commit hash for Hub loads, else None}.
+    """
+    owner = getattr(predict, "__self__", None)
+    source = getattr(owner, "source", None)
+    if source is None:
+        return {"source": None, "loaded_from": None, "hub_revision": None}
+    model = getattr(owner, "model", None)
+    model_type = getattr(owner, "model_type", None)
+    if model_type in ("bert", "guard"):
+        model = getattr(owner, f"{model_type}_model", None)
+    path = Path(str(source))
+    if path.exists():
+        resolved = path.resolve()
+        shown = resolved.relative_to(ROOT).as_posix() if resolved.is_relative_to(ROOT) else str(resolved)
+        return {"source": shown, "loaded_from": "local", "hub_revision": None}
+    revision = getattr(getattr(model, "config", None), "_commit_hash", None)
+    return {"source": str(source), "loaded_from": "hub", "hub_revision": revision}
+
+
 def _batched(predict, texts: list[str], size: int = 64) -> np.ndarray:
     return np.concatenate([predict(texts[i : i + size]) for i in range(0, len(texts), size)])
 
@@ -343,6 +367,10 @@ def main(argv: list[str] | None = None) -> dict:
     models, model_skips = load_models(args.protectai)
     for name, reason in model_skips.items():
         print(f"[model {name}] skipped: {reason[:200]}")
+    model_weights = {name: weights_source(predict) for name, predict in models.items()}
+    for name, info in model_weights.items():
+        revision = f" @ {info['hub_revision']}" if info["hub_revision"] else ""
+        print(f"[model {name}] weights: {info['source']} ({info['loaded_from']}{revision})")
     thresholds = validation_thresholds(models)
 
     datasets_out = []
@@ -406,6 +434,7 @@ def main(argv: list[str] | None = None) -> dict:
         "training_dataset": provenance,
         "dedup_reference": "all rows of data/train.csv plus the classical model's train-only extras",
         "models_skipped": model_skips,
+        "model_weights": model_weights,
         "views": {
             "fixed_threshold": "argmax of the 3-class output (the label the API returns); no tuning",
             "auroc": "threshold-free; score = P(not-SAFE) = 1 - P(SAFE); percentile bootstrap 95% CI "
