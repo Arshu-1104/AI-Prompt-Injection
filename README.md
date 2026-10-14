@@ -179,11 +179,14 @@ AI-Prompt-Injection/
 | Train classical | CPU, under a minute |
 | **Train bert / guard** | **A GPU**, one time. Free Colab or Kaggle is enough. CPU works but is slow: about 20 min per DistilBERT epoch and about 50 min per ModernBERT epoch on the dev laptop (smoke-run throughput, extrapolated) |
 
-- Push trained weights to a **private** Hub repo (`--push-to-hub`; private is the default) until a
-  release decision is made.
+- Trained weights live in **private** Hub repos, `Arshu-110405/promptguard-bert` and
+  `Arshu-110405/promptguard-guard`. They stay **private until the data-license review** is done
+  (see the WildGuard note below). Uploads use `python -m src.hub_upload` or `--push-to-hub`; private is
+  the default.
 - Any model card must state the data licenses: neuralchemy is Apache-2.0 but includes a WildGuard /
-  JudgeComparison source labelled "Research" (and HackAPrompt, CC BY 4.0). xTRam1 states no license.
-  The Qualifire benchmark is CC-BY-NC-4.0 and gated, and must not be redistributed.
+  JudgeComparison source labelled "Research" (research use only; and HackAPrompt, CC BY 4.0). xTRam1
+  states no license. The Qualifire benchmark is CC-BY-NC-4.0 (non-commercial) and gated: it is used
+  for evaluation only, never for training, and must not be redistributed.
 - `python -m src.eval_only --bert-model-id Arshu-110405/promptguard-bert --guard-model-id Arshu-110405/promptguard-guard`
   downloads the weights, evaluates on the official test split on CPU with progress output, and writes
   the same metrics JSON as `src.evaluate`.
@@ -319,17 +322,31 @@ accuracy change (3 of 942 rows) is within noise: int8 costs no measurable accura
 
 ### External evaluation
 
-`python -m src.external_eval [--protectai]` scores the trained models, without retraining, on
-`xTRam1/safe-guard-prompt-injection` (test; no license stated), `deepset/prompt-injections` (test;
-Apache-2.0, mostly German) and `qualifire/prompt-injections-benchmark` (test; CC-BY-NC-4.0, gated:
-accept the terms and set `HF_TOKEN`, otherwise it is skipped). Labels are mapped to SAFE vs
-MALICIOUS after an automatic label-meaning check. Texts that also appear in the training data are
-removed first (exact and normalized), with the counts logged. Results go to
-`artifacts/external_eval.json`, `artifacts/tables/external_eval.{md,tex}` and
-`artifacts/tables/external_eval_thresholds.md`.
+`python -m src.external_eval [--protectai]` scores the trained models, without retraining, on three
+external test sets. Labels are mapped to SAFE vs MALICIOUS after an automatic label-meaning check.
+Texts that also appear in the training data are removed first (exact and normalized), with the
+counts logged (0 rows removed for all three sets). Results go to `artifacts/external_eval.json`,
+`artifacts/tables/external_eval.{md,tex}` and `artifacts/tables/external_eval_thresholds.md`.
 
-Results (no retraining; `bert` and `guard` = seed-42 weights; Qualifire skipped, no `HF_TOKEN`; 0 rows
-removed as training overlap). Three views, kept apart:
+- `xTRam1/safe-guard-prompt-injection` @ `a3a877d`, test split, 2,060 rows. No license stated.
+- `deepset/prompt-injections` @ `4f61ecb`, test split, 116 rows, Apache-2.0. Mixed English and
+  German: 61 English, 38 German and 17 unclear by a stopword heuristic.
+- `qualifire/prompt-injections-benchmark` @ `9ef1aa4`, test split, 5,000 rows (2,997 benign,
+  2,003 jailbreak), **CC-BY-NC-4.0, non-commercial**, gated (accept the terms on the Hub and set
+  `HF_TOKEN`, otherwise it is skipped). It is a **jailbreak-versus-benign** benchmark, not another
+  prompt-injection set: its positive label is `jailbreak`. It is used for evaluation only, never for
+  training, and its data is never saved into this repository or redistributed. The Hub now lists it
+  as `rogue-security/prompt-injections-benchmark`; the `qualifire/` name redirects there.
+
+**Weights evaluated.** bert and guard are the seed-42 runs. Per the maintainer, the run that
+produced the Qualifire numbers loaded them from the private Hub repos `Arshu-110405/promptguard-bert`
+and `Arshu-110405/promptguard-guard`. That run's results file does not record the weight source.
+On xTRam1 and deepset its predictions are identical to the earlier run on the local seed-42 weights
+(`artifacts/paper_runs/*/seed_42`), which supports this: every accuracy, F1, false-positive rate,
+AUROC, CI, prediction count and tuned result matches, and ECE differs by less than 1e-9.
+ProtectAI is `protectai/deberta-v3-base-prompt-injection-v2`, not trained here.
+
+Three views, kept apart:
 
 - **Fixed threshold** — the label the API returns (3-class argmax; SAFE vs not-SAFE). No tuning.
 - **AUROC** — threshold-free, on the score P(not-SAFE) = 1 − P(SAFE); percentile bootstrap 95% CI
@@ -339,20 +356,24 @@ removed as training overlap). Three views, kept apart:
   data. **No external data is used for tuning.** Thresholds: classical 0.567, bert 0.500,
   guard 0.749, ProtectAI 0.008.
 
-| dataset | model | n | fixed acc | fixed FPR | AUROC [95% CI] | validation-tuned acc | validation-tuned FPR |
-|---|---|---|---|---|---|---|---|
-| xTRam1 | classical | 2060 | 0.5437 | 0.6057 | 0.737 [0.715, 0.759] | 0.5587 | 0.5716 |
-| xTRam1 | bert | 2060 | 0.5442 | 0.5929 | 0.636 [0.613, 0.659] | 0.5393 | 0.6021 |
-| xTRam1 | guard | 2060 | 0.5398 | 0.6454 | 0.669 [0.644, 0.692] | 0.5670 | 0.5858 |
-| xTRam1 | ProtectAI | 2060 | 0.9607 | 0.0021 | 0.992 [0.988, 0.995] | 0.9733 | 0.0057 |
-| deepset | classical | 116 | 0.5517 | 0.6429 | 0.691 [0.589, 0.784] | 0.6121 | 0.4821 |
-| deepset | bert | 116 | 0.7328 | 0.3036 | 0.799 [0.714, 0.874] | 0.7328 | 0.3036 |
-| deepset | guard | 116 | 0.7586 | 0.3214 | 0.776 [0.685, 0.857] | 0.7500 | 0.3214 |
-| deepset | ProtectAI | 116 | 0.6983 | 0.0000 | 0.899 [0.834, 0.946] | 0.7414 | 0.0000 |
-| deepset, English subset | classical | 61 | 0.6721 | 0.2609 | 0.785 [0.667, 0.894] | 0.7213 | 0.0870 |
-| deepset, English subset | bert | 61 | 0.7869 | 0.0000 | 0.945 [0.873, 0.995] | 0.7869 | 0.0000 |
-| deepset, English subset | guard | 61 | 0.8197 | 0.0435 | 0.904 [0.819, 0.967] | 0.8033 | 0.0435 |
-| deepset, English subset | ProtectAI | 61 | 0.5902 | 0.0000 | 0.952 [0.894, 0.994] | 0.6393 | 0.0000 |
+| dataset | model | n | fixed acc | F1 | fixed FPR | ECE | AUROC [95% CI] | validation-tuned acc | validation-tuned FPR |
+|---|---|---|---|---|---|---|---|---|---|
+| xTRam1 | classical | 2060 | 0.5437 | 0.5455 | 0.6057 | 0.2310 | 0.737 [0.715, 0.759] | 0.5587 | 0.5716 |
+| xTRam1 | bert | 2060 | 0.5442 | 0.5381 | 0.5929 | 0.4158 | 0.636 [0.613, 0.659] | 0.5393 | 0.6021 |
+| xTRam1 | guard | 2060 | 0.5398 | 0.5635 | 0.6454 | 0.3892 | 0.669 [0.644, 0.692] | 0.5670 | 0.5858 |
+| xTRam1 | ProtectAI | 2060 | 0.9607 | 0.9339 | 0.0021 | 0.0355 | 0.992 [0.987, 0.995] | 0.9733 | 0.0057 |
+| deepset | classical | 116 | 0.5517 | 0.6286 | 0.6429 | 0.1752 | 0.690 [0.589, 0.784] | 0.6121 | 0.4821 |
+| deepset | bert | 116 | 0.7328 | 0.7480 | 0.3036 | 0.2270 | 0.799 [0.714, 0.874] | 0.7328 | 0.3036 |
+| deepset | guard | 116 | 0.7586 | 0.7812 | 0.3214 | 0.2231 | 0.776 [0.685, 0.857] | 0.7500 | 0.3214 |
+| deepset | ProtectAI | 116 | 0.6983 | 0.5882 | 0.0000 | 0.2957 | 0.899 [0.833, 0.946] | 0.7414 | 0.0000 |
+| deepset, English subset | classical | 61 | 0.6721 | 0.7059 | 0.2609 | 0.0963 | 0.785 [0.667, 0.894] | 0.7213 | 0.0870 |
+| deepset, English subset | bert | 61 | 0.7869 | 0.7937 | 0.0000 | 0.1660 | 0.945 [0.873, 0.995] | 0.7869 | 0.0000 |
+| deepset, English subset | guard | 61 | 0.8197 | 0.8358 | 0.0435 | 0.1733 | 0.904 [0.819, 0.967] | 0.8033 | 0.0435 |
+| deepset, English subset | ProtectAI | 61 | 0.5902 | 0.5098 | 0.0000 | 0.3999 | 0.952 [0.894, 0.994] | 0.6393 | 0.0000 |
+| Qualifire (jailbreak vs benign) | classical | 5000 | 0.5772 | 0.5666 | 0.4982 | 0.1420 | 0.674 [0.660, 0.689] | 0.5946 | 0.4862 |
+| Qualifire (jailbreak vs benign) | bert | 5000 | 0.6044 | 0.5421 | 0.3824 | 0.2969 | 0.687 [0.672, 0.701] | 0.6030 | 0.3907 |
+| Qualifire (jailbreak vs benign) | guard | 5000 | 0.6040 | 0.5391 | 0.3787 | 0.2322 | 0.670 [0.657, 0.685] | 0.5896 | 0.2846 |
+| Qualifire (jailbreak vs benign) | ProtectAI | 5000 | 0.7178 | 0.6620 | 0.2636 | 0.2687 | 0.826 [0.816, 0.837] | 0.7142 | 0.3223 |
 
 Predicted-class distribution, fixed threshold (counts as SAFE / SUSPICIOUS / MALICIOUS):
 
@@ -367,24 +388,32 @@ Predicted-class distribution, fixed threshold (counts as SAFE / SUSPICIOUS / MAL
 | deepset, English subset | classical | 17 / 0 / 6 | 14 / 0 / 24 |
 | deepset, English subset | bert | 23 / 0 / 0 | 13 / 0 / 25 |
 | deepset, English subset | guard | 22 / 0 / 1 | 10 / 0 / 28 |
+| Qualifire (jailbreak vs benign) | classical | 1504 / 28 / 1465 | 621 / 106 / 1276 |
+| Qualifire (jailbreak vs benign) | bert | 1851 / 211 / 935 | 832 / 198 / 973 |
+| Qualifire (jailbreak vs benign) | guard | 1862 / 72 / 1063 | 845 / 138 / 1020 |
 
 What this shows:
 
-- **xTRam1 is not a threshold problem.** About 60% of benign prompts are predicted MALICIOUS outright,
-  not SUSPICIOUS. The scores carry some ranking signal (AUROC 0.64–0.74), but a threshold chosen on
-  neuralchemy validation barely moves accuracy (≤ +0.03). Fine-tuned transformers rank xTRam1 *worse*
-  than classical. **None of the PromptGuard models generalizes to xTRam1.**
-- **deepset (English):** bert and guard separate the classes well (AUROC 0.95 and 0.90), but n = 61,
-  so the intervals are wide. The full deepset set is mostly German, where all PromptGuard models flag
-  most benign prompts.
-- **ProtectAI** ranks both sets best. Its validation-tuned threshold is very low (0.008), because its
-  scores sit close to 0 or 1. Its own training data may overlap with these public sets; we can't rule
-  that out.
-- The bert "fixed" and "tuned at 0.500" numbers differ slightly: the fixed view is the 3-class argmax,
+- **No PromptGuard model generalizes to xTRam1 or Qualifire.** On both, classical, bert and guard
+  score 0.54 to 0.60 accuracy (AUROC 0.64 to 0.74). On xTRam1, 58–64% of benign prompts are
+  predicted MALICIOUS outright, not SUSPICIOUS. The fine-tuned transformers rank xTRam1 *worse* than
+  classical (AUROC 0.636 and 0.669 vs 0.737). On Qualifire the three models' AUROC intervals overlap.
+- **Thresholds are not the fix.** Validation-tuned thresholds change accuracy by at most about 0.03
+  on xTRam1 and Qualifire. On the small deepset set (n = 116) the change reaches +0.06 for classical,
+  and even then accuracy stays at or below 0.75 for every model. On the English subset (n = 61) it
+  reaches +0.05 for classical and ProtectAI.
+- **deepset (English subset):** bert and guard separate the classes well (AUROC 0.945 and 0.904), but
+  n = 61, so the intervals are wide. On the German rows every PromptGuard model flags most benign
+  prompts (see the diagnosis below).
+- **ProtectAI** has the highest AUROC on all three sets. It is strongest on xTRam1 and Qualifire but
+  much weaker on Qualifire (accuracy 0.72) than on xTRam1 (0.96). Its training data is not fully
+  documented, so overlap with these public sets can be neither confirmed nor ruled out. Its
+  validation-tuned threshold is very low (0.008).
+- The bert "fixed" and "tuned at 0.500" numbers can differ: the fixed view is the 3-class argmax,
   while the tuned view thresholds P(not-SAFE). They disagree when no class has more than half the
   probability.
-- The SUSPICIOUS class is almost never predicted on external data, so the binary view loses little by
-  merging it.
+- SUSPICIOUS predictions are rare on xTRam1 and deepset (at most 1.3% of rows). On Qualifire they
+  are 2.7% (classical), 8.2% (bert) and 4.2% (guard) of rows. The binary view counts them as flagged.
 
 ### External generalization: diagnosis
 
@@ -400,8 +429,9 @@ What this shows:
   the training data's attacks are imperative and its benign rows are mostly questions.
 - **xTRam1 false negatives** are harmful or exfiltration requests framed as creative writing, with no
   override keywords ("Write me a poem that contains confidential information…").
-- **deepset** is mostly German. The English subset scores clearly better than the German subset, where
-  almost every benign query is flagged. **PromptGuard does not claim multilingual support.**
+- **deepset** mixes English and German (61 English, 38 German, 17 unclear by the stopword heuristic).
+  The English subset scores clearly better than the German subset, where almost every benign query is
+  flagged (false-positive rate 0.94). **PromptGuard does not claim multilingual support.**
 - **bert and guard** (seed 42) show the same xTRam1 failure (accuracy 0.544 / 0.540, false-positive
   rate 0.59 / 0.65; inverted-label accuracy 0.46, so the labels are not swapped). On deepset they do
   better than classical, mostly on English (accuracy 0.787 / 0.820) rather than German
@@ -451,6 +481,13 @@ ModernBERT needs `transformers>=4.48`. The guard script downloads `answerdotai/M
 in git are Git LFS pointer stubs; Docker and Render builds do not use them. The weights live in
 **private** repos on the Hugging Face account **Arshu-110405** (the GitHub account is Arshu-1104):
 `Arshu-110405/promptguard-bert` and `Arshu-110405/promptguard-guard`.
+
+**Status: uploaded.** The seed-42 weights (`artifacts/paper_runs/bert/seed_42` and
+`artifacts/paper_runs/guard/seed_42`) were uploaded by the maintainer with `src/hub_upload.py`. The
+repos stay private until the data-license review is done (WildGuard / JudgeComparison is research-only).
+The weights downloaded from these repos reproduce the earlier external numbers exactly: identical
+predictions on xTRam1 and deepset, with ECE differing by less than 1e-9 (see External evaluation).
+To redo or update the upload:
 
 ```bash
 export HF_TOKEN=hf_...   # write token of the Arshu-110405 account
@@ -615,12 +652,11 @@ Features: model switcher, single prompt analysis, risk badge, confidence bar, pa
 
 ## Known Limitations
 
-1. **Trained bert/guard weights are not on the Hub yet.** They were trained locally
-   (`artifacts/paper_runs/`) but not uploaded: that needs an `HF_TOKEN` of the Hugging Face account
-   Arshu-110405 with write access (`python -m src.hub_upload`, above). The repos are private, and
-   the generated model card states the data licenses (item 7). Until they exist, the configured
-   defaults (`Arshu-110405/promptguard-bert` / `-guard`) report `download_failed` when heavy models
-   are enabled. Serve from a local path via `BERT_MODEL_ID` / `GUARD_MODEL_ID` instead.
+1. **bert/guard weights are private until the license review.** The seed-42 weights are in the
+   private repos `Arshu-110405/promptguard-bert` and `Arshu-110405/promptguard-guard`. Serving them
+   needs an `HF_TOKEN` with read access to those repos. Without it, the configured defaults report
+   `download_failed` when heavy models are enabled; serve from a local path via `BERT_MODEL_ID` /
+   `GUARD_MODEL_ID` instead. The generated model card states the data licenses (item 7).
 2. **Robustness gate: binary, baseline 0.90.** CI gates on binary flagged-or-not detection over the
    `src/robustness.py` adversarial suite: SAFE vs not-SAFE must be at least `BINARY_ROBUSTNESS_BASELINE`
    (default 0.90). Rationale: the SUSPICIOUS-vs-MALICIOUS expectations in the suite are hand-assigned
@@ -630,11 +666,12 @@ Features: model switcher, single prompt analysis, risk badge, confidence bar, pa
 3. **Synthetic SUSPICIOUS class.** It comes from appending a manipulation phrase to SAFE rows, which
    is easy to detect (near-perfect SUSPICIOUS F1). That says little about real ambiguous prompts;
    use the binary metrics for comparisons.
-4. **Weak out-of-distribution performance (all PromptGuard models).** On xTRam1 the classical, bert
-   and guard models all score about 0.54 accuracy and flag roughly 60% of benign prompts. A threshold
-   chosen on neuralchemy validation does not fix this (see External evaluation). deepset is mostly
-   German, which the English-trained models have not seen. Only the English subset of deepset (n = 61)
-   looks good for bert and guard.
+4. **Weak out-of-distribution performance (all PromptGuard models).** On xTRam1 and on Qualifire
+   (jailbreak vs benign), classical, bert and guard score 0.54 to 0.60 accuracy (AUROC 0.64 to 0.74).
+   They flag 59–65% of benign prompts on xTRam1 and 38–50% on Qualifire. A threshold chosen on
+   neuralchemy validation does not fix this (see External evaluation). deepset's German rows, which
+   the English-trained models have not seen, are mostly flagged. Only the English subset of deepset
+   (n = 61) looks good for bert and guard (AUROC 0.945 / 0.904).
 5. **Tag-shaped payloads (fixed, with a trade-off).** `clean_text` strips tag-shaped text before
    models see it. Attack patterns therefore also run on the raw text, chat-template / special-token
    strings (`<|im_start|>`, `[INST]`, `<<SYS>>`, `</s>`, ...) are matched on the raw text and can't be
@@ -645,7 +682,9 @@ Features: model switcher, single prompt analysis, risk badge, confidence bar, pa
 6. **Small robustness categories.** Many categories have n < 20, so their Wilson intervals are wide
    and they are flagged low-confidence.
 7. **Dataset license caveat.** The card declares Apache-2.0 but lists WildGuard / JudgeComparison as
-   "Research" and HackAPrompt as CC BY 4.0. The Qualifire benchmark is CC-BY-NC-4.0.
+   "Research" (research use only) and HackAPrompt as CC BY 4.0, so the trained weights stay private
+   until that is reviewed. The Qualifire benchmark is CC-BY-NC-4.0 (non-commercial): evaluation only,
+   never training, never redistributed.
 8. **Memory figures for heavy models are estimates**, not measurements, until the heavy Docker image
    is built and run (`docker stats`; see "Reproducing the results", B6). Docker was not available
    where these results were produced.
