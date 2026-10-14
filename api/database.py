@@ -1,6 +1,6 @@
 from __future__ import annotations
 import os, uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -46,6 +46,14 @@ def _uuid_col(primary_key: bool = False, foreign_key: str | None = None):
     return mapped_column(col_type, primary_key=primary_key, default=lambda: str(uuid.uuid4()))
 
 
+def utcnow_naive() -> datetime:
+    """Current UTC time without tzinfo, matching the naive DateTime columns.
+
+    Replaces the deprecated datetime.utcnow(); existing rows are naive UTC.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -53,8 +61,11 @@ class ApiKey(Base):
     __tablename__ = "api_keys"
     id: Mapped[str] = _uuid_col(primary_key=True)
     key_hash: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    # Non-secret lookup prefix of the raw key (see api.auth.KEY_PREFIX_LENGTH);
+    # NULL for keys created before migration 0002.
+    key_prefix: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
     org_name: Mapped[str] = mapped_column(String(200), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
     rate_limit_per_minute: Mapped[int] = mapped_column(Integer, default=60)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     store_raw_text: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -62,8 +73,10 @@ class ApiKey(Base):
 class Prediction(Base):
     __tablename__ = "predictions"
     id: Mapped[str] = _uuid_col(primary_key=True)
-    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
-    api_key_id: Mapped[str | None] = mapped_column(_sa.String(36), _sa.ForeignKey("api_keys.id"), nullable=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
+    # Same type as api_keys.id (native UUID on Postgres, as in migration 0001); a
+    # String(36) here made every prediction INSERT fail on Postgres.
+    api_key_id: Mapped[str | None] = _uuid_col(foreign_key="api_keys.id")
     input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     input_raw: Mapped[str | None] = mapped_column(String, nullable=True)
     label: Mapped[str] = mapped_column(String(20), nullable=False)

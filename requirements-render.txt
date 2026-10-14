@@ -6,8 +6,8 @@ sqlalchemy[asyncio]>=2.0
 alembic>=1.13
 bcrypt>=4.1
 slowapi>=0.1.9
-pandas>=2.0
-numpy>=1.24
+pandas==3.0.6
+numpy==2.5.4
 # scikit-learn 1.6.1 predates CPython 3.14 wheels on Windows.
 scikit-learn==1.6.1; python_version < "3.14"
 scikit-learn>=1.9,<2; python_version >= "3.14"

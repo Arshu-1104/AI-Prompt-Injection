@@ -1,4 +1,4 @@
-﻿import { copyFileSync, cpSync, mkdirSync } from "node:fs";
+import { copyFileSync, cpSync, mkdirSync } from "node:fs";
 
 mkdirSync("dist", { recursive: true });
 copyFileSync("manifest.json", "dist/manifest.json");

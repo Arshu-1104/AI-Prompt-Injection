@@ -1,4 +1,4 @@
-﻿version: "3.9"
+version: "3.9"
 services:
   postgres:
     image: postgres:16-alpine
@@ -17,9 +17,20 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backend
+      args:
+        # 1 = install CPU torch + transformers for the bert/guard models.
+        INSTALL_HEAVY: ${INSTALL_HEAVY:-0}
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@postgres/promptguard
       ADMIN_SECRET_KEY: ${ADMIN_SECRET_KEY}
+      ENABLE_HEAVY_MODELS: ${ENABLE_HEAVY_MODELS:-false}
+      # Private Hub repos (HF_TOKEN needed); only used when ENABLE_HEAVY_MODELS=true.
+      BERT_MODEL_ID: ${BERT_MODEL_ID:-Arshu-110405/promptguard-bert}
+      GUARD_MODEL_ID: ${GUARD_MODEL_ID:-Arshu-110405/promptguard-guard}
+      HF_TOKEN: ${HF_TOKEN:-}
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+    volumes:
+      - hf-cache:/app/.cache/huggingface
     ports:
       - "8000:8000"
     depends_on:
@@ -46,3 +57,4 @@ services:
 
 volumes:
   pgdata:
+  hf-cache:

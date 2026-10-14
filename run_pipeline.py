@@ -10,7 +10,7 @@ def main() -> None:
         ("load_data", "src.load_data"),
         ("train_classical", "src.train_classical"),
         ("train_bert", "src.train_bert"),
-        # ("train_guard_model", "src.train_guard_model"),  # requires internet to download ModernBERT-base
+        ("train_guard_model", "src.train_guard_model"),  # downloads ModernBERT-base (~600 MB)
         ("evaluate", "src.evaluate"),
         ("explain", "src.explain"),
         ("robustness", "src.robustness"),

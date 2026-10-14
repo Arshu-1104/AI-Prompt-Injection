@@ -1,9 +1,28 @@
-﻿FROM python:3.12-slim
+FROM python:3.12-slim
+
+# Default: slim classical-only image. Build with --build-arg INSTALL_HEAVY=1 to add
+# CPU-only torch + transformers so the bert/guard models can be served.
+# Weights are never baked in (models/bert_model and models/guard_model are Git LFS
+# stubs): at runtime set ENABLE_HEAVY_MODELS=true plus BERT_MODEL_ID / GUARD_MODEL_ID
+# (Hugging Face Hub repo ids; HF_TOKEN for private repos). They download on first start
+# into HF_HOME - mount a volume there to avoid re-downloading on every restart.
+ARG INSTALL_HEAVY=0
+
+# uvicorn reads WEB_CONCURRENCY as its worker count. Every worker loads its own copy of
+# the models, so use WEB_CONCURRENCY=1 with heavy models unless RAM is plentiful.
+ENV PYTHONUNBUFFERED=1 \
+    HF_HOME=/app/.cache/huggingface \
+    WEB_CONCURRENCY=2
+
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements-render.txt requirements-heavy.txt ./
+RUN pip install --no-cache-dir -r requirements-render.txt \
+ && if [ "$INSTALL_HEAVY" = "1" ]; then \
+      pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
+      && pip install --no-cache-dir -r requirements-heavy.txt; \
+    fi
 COPY src/ ./src/
 COPY api/ ./api/
-COPY models/ ./models/
+COPY models/classical_model.pkl ./models/
 EXPOSE 8000
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

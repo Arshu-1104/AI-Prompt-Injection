@@ -20,6 +20,10 @@ def normalize_async_db_url(raw_url: str) -> tuple[str, dict]:
     url = raw_url
     if url.startswith("postgresql://"):
         url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    if not url.startswith("postgresql"):
+        # urlunsplit drops the empty netloc of "sqlite+aiosqlite:///file.db",
+        # producing an unparsable URL, and only Postgres needs rewriting.
+        return url, {}
 
     parts = urlsplit(url)
     query_pairs = parse_qsl(parts.query, keep_blank_values=True)

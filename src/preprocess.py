@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import base64
 import codecs
-import json
 import re
-from pathlib import Path
 
 import pandas as pd
 
@@ -35,6 +33,17 @@ ATTACK_PATTERNS = [
     r"what\s+(were|are)\s+your\s+(original\s+|initial\s+)?instructions?",
     r"what\s+was\s+your\s+(original\s+|initial\s+)?(system\s+)?prompt",
     r"no\s+restrictions?\b",
+]
+
+# Chat-template / special-token strings an attacker can paste to fake a system or
+# assistant turn. clean_text strips tag-shaped strings, so these are matched on the
+# RAW text, and the benign allowlist never suppresses them.
+CHAT_TEMPLATE_PATTERNS = [
+    r"<\|[^|<>\n]{1,40}\|>",  # <|im_start|>, <|im_end|>, <|eot_id|>, <|endoftext|>, obfuscated <|im_$7@rt|>
+    r"\[/?inst\]",  # Llama-2 [INST] ... [/INST]
+    r"<</?sys>>",  # Llama-2 <<SYS>> ... <</SYS>>
+    r"</?s>",  # sentence-boundary tokens <s> / </s>
+    r"<(?:start|end)_of_turn>",  # Gemma turn markers
 ]
 
 BENIGN_ALLOWLIST = [
@@ -110,16 +119,78 @@ def clean_text(text: str) -> str:
     return cleaned
 
 
-def highlight_attack_patterns(text: str, *, already_clean: bool = False) -> list[str]:
+def raw_normalize(text: str) -> str:
+    """Lowercased, decoded, whitespace-collapsed text WITHOUT stripping tags."""
+    return re.sub(r"\s+", " ", _decode_encoded_segments(str(text)).lower()).strip()
+
+
+def detect_chat_template_tokens(raw_text: str) -> list[str]:
+    return [p for p in CHAT_TEMPLATE_PATTERNS if re.search(p, str(raw_text), flags=re.IGNORECASE)]
+
+
+def highlight_attack_patterns(text: str, *, already_clean: bool = False, raw_text: str | None = None) -> list[str]:
+    """Matched attack patterns.
+
+    Patterns run on the cleaned text and, when the raw text is known, on the raw
+    text too, so nothing hidden by tag stripping escapes. Chat-template tokens are
+    matched on the raw text and are never suppressed by the benign allowlist.
+    """
     lower = text if already_clean else clean_text(text)
-    for benign_pattern in BENIGN_ALLOWLIST:
-        if re.search(benign_pattern, lower, flags=re.IGNORECASE):
-            return []
-    matches: list[str] = []
+    raw = raw_text if raw_text is not None else (None if already_clean else text)
+    views = [lower] + ([raw_normalize(raw)] if raw is not None else [])
+    matches = detect_chat_template_tokens(raw) if raw is not None else []
+    if any(re.search(b, lower, flags=re.IGNORECASE) for b in BENIGN_ALLOWLIST):
+        return matches
     for pattern in ATTACK_PATTERNS:
-        if re.search(pattern, lower, flags=re.IGNORECASE):
+        if any(re.search(pattern, view, flags=re.IGNORECASE) for view in views):
             matches.append(pattern)
     return matches
+
+
+RULE_CHAT_TEMPLATE = "chat_template_token"
+RULE_HIDDEN_IN_TAGS = "content_hidden_in_tags"
+
+
+def rule_flags(raw_text: str, cleaned: str) -> list[str]:
+    """Rule-layer signals that are independent of any model.
+
+    chat_template_token: the raw text contains a chat-template / special token.
+    content_hidden_in_tags: the raw text has tag-shaped content but nothing is left
+    after cleaning, so the model would only see an empty string.
+    """
+    flags = []
+    if detect_chat_template_tokens(raw_text):
+        flags.append(RULE_CHAT_TEMPLATE)
+    raw = str(raw_text)
+    if raw.strip() and not cleaned.strip() and re.search(r"<[^>]+>", raw):
+        flags.append(RULE_HIDDEN_IN_TAGS)
+    return flags
+
+
+def apply_rule_floor(label: str, flags: list[str]) -> tuple[str, bool]:
+    """Any rule flag means the prompt is at least SUSPICIOUS. Returns (label, raised)."""
+    if flags and label == "SAFE":
+        return "SUSPICIOUS", True
+    return label, False
+
+
+def empty_after_cleaning_label(flags: list[str]) -> str:
+    """Label when nothing is left after cleaning. A model has no input to judge
+    (classical predicts MALICIOUS for an empty string), so the rules decide:
+    SUSPICIOUS if anything was hidden in tags or template tokens, otherwise SAFE."""
+    return "SUSPICIOUS" if flags else "SAFE"
+
+
+def pipeline_labels(model_labels: list[str], raw_texts: list[str], cleaned_texts: list[str]) -> list[str]:
+    """What the API returns for each prompt: model label, then the rule layer."""
+    out = []
+    for model_label, raw, cleaned in zip(model_labels, raw_texts, cleaned_texts):
+        flags = rule_flags(raw, cleaned)
+        if not cleaned.strip():
+            out.append(empty_after_cleaning_label(flags))
+        else:
+            out.append(apply_rule_floor(model_label, flags)[0])
+    return out
 
 
 def get_risk_phrases(text: str) -> list[dict[str, str | int]]:
@@ -138,56 +209,37 @@ def get_risk_phrases(text: str) -> list[dict[str, str | int]]:
     return spans
 
 
-def load_processed_dataset() -> pd.DataFrame:
-    root = Path(__file__).resolve().parents[1]
-    data_path = root / "data" / "processed_dataset.csv"
-    if not data_path.exists():
-        raise FileNotFoundError(f"Dataset not found at {data_path}. Run src/load_data.py first.")
-    df = pd.read_csv(data_path)
-    if "text" not in df.columns or "label" not in df.columns:
-        raise ValueError("processed_dataset.csv must contain 'text' and 'label' columns.")
-    df["text"] = df["text"].map(clean_text)
+def load_split(split: str) -> pd.DataFrame:
+    """One official split (train / validation / test) built by src.load_data.
+
+    Refuses a CSV whose sha256 differs from data/dataset_meta.json. Text is
+    normalized with clean_text, as the API does before predicting.
+    """
+    from src.load_data import SPLIT_PATHS, read_meta, sha256_file
+
+    path = SPLIT_PATHS[split]
+    if not path.exists():
+        raise FileNotFoundError(f"Dataset split not found at {path}. Run `python -m src.load_data` first.")
+    expected = read_meta()["processed"][split]["sha256"]
+    if sha256_file(path) != expected:
+        raise ValueError(
+            f"{path} does not match the sha256 in dataset_meta.json (edited or stale). "
+            "Rerun `python -m src.load_data`."
+        )
+    df = pd.read_csv(path, keep_default_na=False, na_values={"hub_label": [""]})
+    df["raw_text"] = df["text"].astype(str)  # for the rule layer, which must see untouched text
+    df["text"] = df["raw_text"].map(clean_text)
     return df
 
 
-def get_train_test_data(test_size: float = 0.2, random_state: int = 42) -> tuple[pd.DataFrame, pd.DataFrame]:
-    df = load_processed_dataset()
-    train_parts: list[pd.DataFrame] = []
-    test_parts: list[pd.DataFrame] = []
-    skipped_labels: list[str] = []
-    for label, group in df.groupby("label", sort=False):
-        if len(group) < 2:
-            skipped_labels.append(str(label))
-            train_parts.append(group)
-            continue
-        shuffled = group.sample(frac=1.0, random_state=random_state)
-        split_idx = min(max(int(len(shuffled) * (1.0 - test_size)), 1), len(shuffled) - 1)
-        train_parts.append(shuffled.iloc[:split_idx])
-        test_parts.append(shuffled.iloc[split_idx:])
+def get_splits() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
+    """(train, validation, test, provenance): the official splits plus what every
+    metrics file records about them. Nothing is re-split."""
+    from src.load_data import dataset_provenance
 
-    if skipped_labels:
-        print(
-            f"[get_train_test_data] WARNING: {skipped_labels} had <2 samples — "
-            "placed entirely in train. These classes will show 0 support in test metrics."
-        )
+    return load_split("train"), load_split("validation"), load_split("test"), dataset_provenance()
 
-    train_df = pd.concat(train_parts).sample(frac=1.0, random_state=random_state)
-    test_df = (
-        pd.concat(test_parts).sample(frac=1.0, random_state=random_state)
-        if test_parts
-        else pd.DataFrame(columns=df.columns)
-    )
 
-    root = Path(__file__).resolve().parents[1]
-    artifacts_dir = root / "artifacts"
-    artifacts_dir.mkdir(parents=True, exist_ok=True)
-    split_path = artifacts_dir / "split_indices.json"
-    split_payload = {
-        "train_indices": train_df.index.tolist(),
-        "test_indices": test_df.index.tolist(),
-        "skipped_labels": skipped_labels,
-    }
-    with open(split_path, "w", encoding="utf-8") as f:
-        json.dump(split_payload, f, indent=2)
-
-    return train_df.reset_index(drop=True), test_df.reset_index(drop=True)
+def get_train_test_data() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(train, test) official splits; kept for older callers."""
+    return load_split("train"), load_split("test")

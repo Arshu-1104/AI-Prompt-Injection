@@ -1,4 +1,4 @@
-﻿"""initial_schema
+"""initial_schema
 
 Revision ID: 0001_initial_schema
 Revises:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import os
 import time
 from collections import Counter, defaultdict, deque
 from contextlib import asynccontextmanager
@@ -20,10 +22,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import PlainTextResponse
 
-from api.auth import generate_api_key, get_current_api_key, hash_input, hash_key, require_admin
-from api.database import ApiKey, AsyncSessionLocal, Base, Prediction, engine, get_db
+from api.auth import generate_api_key, get_current_api_key, hash_input, hash_key, key_prefix, require_admin
+from api.database import ApiKey, AsyncSessionLocal, Base, Prediction, engine, get_db, utcnow_naive
+from src.model_sources import ModelUnavailableError
 from src.predict import PromptAnalyzer
-from src.preprocess import ATTACK_PATTERNS
+from src.preprocess import ATTACK_PATTERNS, CHAT_TEMPLATE_PATTERNS
 
 
 class PredictRequest(BaseModel):
@@ -53,30 +56,87 @@ class SettingsPayload(BaseModel):
 # burst above the configured limit after each deploy.
 _RATE_WINDOW: dict[str, deque[float]] = defaultdict(deque)
 
+# uvicorn configures this logger, so INFO lines show up in the server output.
+logger = logging.getLogger("uvicorn.error")
+MODEL_TYPES = ("classical", "bert", "guard")
+
+# The event loop keeps only weak references to tasks, so a fire-and-forget
+# prediction-log task can be garbage-collected before it finishes. Hold strong
+# references until each task completes, and surface failures in the log.
+_background_tasks: set[asyncio.Task] = set()
+SHUTDOWN_DRAIN_SECONDS = 5.0
+
+
+def _on_background_task_done(task: asyncio.Task) -> None:
+    _background_tasks.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        logger.error("Background task failed", exc_info=task.exception())
+
+
+def _spawn_background(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_on_background_task_done)
+    return task
+
+
+def _heavy_models_enabled() -> bool:
+    return os.environ.get("ENABLE_HEAVY_MODELS", "false").lower() == "true"
+
+
+# Public reason codes for an unavailable model (GET /health, 503 responses).
+# Details such as file paths and exception text are logged server-side only.
+REASON_HEAVY_DISABLED = "heavy_disabled"
+
+
+def _load_analyzer(app: FastAPI, model_type: str, **kwargs) -> None:
+    t0 = time.monotonic()
+    try:
+        analyzer = PromptAnalyzer(model_type=model_type, **kwargs)
+    except ModelUnavailableError as exc:
+        app.state.model_status[model_type] = {"available": False, "reason": exc.code}
+        logger.warning("Model '%s' unavailable (%s): %s", model_type, exc.code, exc)
+        return
+    except Exception:
+        app.state.model_status[model_type] = {"available": False, "reason": "load_failed"}
+        logger.exception("Model '%s' failed to load (load_failed)", model_type)
+        return
+    app.state.analyzers[model_type] = analyzer
+    app.state.model_status[model_type] = {"available": True, "reason": None}
+    logger.info("Model '%s' loaded from %s in %.1fs", model_type, analyzer.source, time.monotonic() - t0)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    import os
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
-    app.state.models_loaded = False
     app.state.analyzers = {}
-    try:
-        app.state.analyzers["classical"] = PromptAnalyzer(model_type="classical", escalate_on_uncertain=True)
-    except Exception:
-        pass
-    # Skip loading heavy transformer models on memory-constrained deployments
-    if os.environ.get("ENABLE_HEAVY_MODELS", "false").lower() == "true":
-        try:
-            app.state.analyzers["bert"] = PromptAnalyzer(model_type="bert")
-        except Exception:
-            pass
-        try:
-            app.state.analyzers["guard"] = PromptAnalyzer(model_type="guard")
-        except Exception:
-            pass
+    app.state.model_status = {}
+    # Heavy transformer models are opt-in: they need torch/transformers (requirements-heavy.txt)
+    # and roughly 1.5-3 GB RAM, more than small hosting tiers provide.
+    if _heavy_models_enabled():
+        _load_analyzer(app, "bert")
+        _load_analyzer(app, "guard")
+    else:
+        for model_type in ("bert", "guard"):
+            app.state.model_status[model_type] = {"available": False, "reason": REASON_HEAVY_DISABLED}
+        logger.info("ENABLE_HEAVY_MODELS is not 'true'; skipping bert and guard.")
+    # Classical escalates uncertain SUSPICIOUS results to guard, but only when guard is
+    # already loaded (reusing it), so ENABLE_HEAVY_MODELS=false never loads ModernBERT.
+    guard = app.state.analyzers.get("guard")
+    _load_analyzer(app, "classical", escalate_on_uncertain=guard is not None, escalation_analyzer=guard)
     app.state.models_loaded = len(app.state.analyzers) > 0
+    logger.info(
+        "Models available: %s; unavailable: %s",
+        sorted(app.state.analyzers) or "none",
+        sorted(set(MODEL_TYPES) - set(app.state.analyzers)) or "none",
+    )
     yield
+    # Let in-flight prediction logs reach the database before shutting down.
+    if _background_tasks:
+        _, pending = await asyncio.wait(set(_background_tasks), timeout=SHUTDOWN_DRAIN_SECONDS)
+        if pending:
+            logger.warning("Shutdown: %d prediction log writes did not finish", len(pending))
 
 
 app = FastAPI(title="PromptGuard API", version="1.0.0", lifespan=lifespan)
@@ -90,11 +150,16 @@ limiter = Limiter(key_func=_key_func)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, lambda request, exc: PlainTextResponse("Rate limit exceeded", status_code=429))
 app.add_middleware(SlowAPIMiddleware)
+# Browser origins allowed to call the API directly, comma-separated (e.g.
+# "https://app.example.com"); "*" allows any. Default: none. First-party clients
+# don't need CORS: the dashboard calls the API server-side through /api/proxy,
+# and the extension calls it from its background worker under host_permissions.
+CORS_ALLOW_ORIGINS = [o.strip() for o in os.environ.get("CORS_ALLOW_ORIGINS", "").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    # The API is bearer-token based, so credentialed wildcard CORS is both
-    # unnecessary and invalid in browsers.
+    allow_origins=CORS_ALLOW_ORIGINS,
+    # The API is bearer-token based, so credentialed CORS is unnecessary (and
+    # invalid with a wildcard origin).
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -149,7 +214,27 @@ def _write_settings(settings: dict) -> None:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "models_loaded": bool(app.state.models_loaded), "version": "1.0.0"}
+    return {
+        "status": "ok",
+        "models_loaded": bool(app.state.models_loaded),
+        "heavy_models_enabled": _heavy_models_enabled(),
+        "models": {
+            model_type: {
+                "available": model_type in app.state.analyzers,
+                "reason": app.state.model_status.get(model_type, {}).get("reason"),
+            }
+            for model_type in MODEL_TYPES
+        },
+        "version": "1.0.0",
+    }
+
+
+def _get_analyzer(model_type: str) -> PromptAnalyzer:
+    analyzer = app.state.analyzers.get(model_type)
+    if analyzer is None:
+        reason = app.state.model_status.get(model_type, {}).get("reason") or "load_failed"
+        raise HTTPException(status_code=503, detail=f"Model '{model_type}' is unavailable ({reason}).")
+    return analyzer
 
 
 @app.post("/predict")
@@ -160,15 +245,11 @@ async def predict(
 ) -> dict:
     request.state.api_key_id = api_key.id
     await _enforce_rate_limit(api_key)
-    if not app.state.models_loaded:
-        raise HTTPException(status_code=503, detail="Models are not loaded.")
     t0 = time.monotonic()
-    analyzer = app.state.analyzers.get(payload.model)
-    if not analyzer:
-        raise HTTPException(status_code=503, detail=f"Model '{payload.model}' unavailable.")
+    analyzer = _get_analyzer(payload.model)
     result = await run_in_threadpool(analyzer.predict, payload.text)
     latency_ms = (time.monotonic() - t0) * 1000
-    asyncio.create_task(_log_prediction(result, payload, api_key, latency_ms))
+    _spawn_background(_log_prediction(result, payload, api_key, latency_ms))
     return {
         "label": result["label"],
         "confidence": result["confidence"],
@@ -189,13 +270,9 @@ async def batch_predict(
 ) -> list[dict]:
     request.state.api_key_id = api_key.id
     await _enforce_rate_limit(api_key)
-    if not app.state.models_loaded:
-        raise HTTPException(status_code=503, detail="Models are not loaded.")
     if not payload.texts:
         raise HTTPException(status_code=400, detail="texts cannot be empty.")
-    analyzer = app.state.analyzers.get(payload.model)
-    if not analyzer:
-        raise HTTPException(status_code=503, detail=f"Model '{payload.model}' unavailable.")
+    analyzer = _get_analyzer(payload.model)
     t0 = time.monotonic()
     predictions = await run_in_threadpool(analyzer.batch_predict, payload.texts)
     total_ms = (time.monotonic() - t0) * 1000
@@ -204,7 +281,7 @@ async def batch_predict(
     # inflated when batch requests are common.
     per_item_ms = total_ms / max(len(payload.texts), 1)
     for text, item in zip(payload.texts, predictions):
-        asyncio.create_task(
+        _spawn_background(
             _log_prediction(item, PredictRequest(text=text, model=payload.model), api_key, per_item_ms)
         )
     return [
@@ -224,7 +301,7 @@ async def batch_predict(
 
 @app.get("/patterns")
 def patterns() -> dict:
-    return {"attack_patterns": ATTACK_PATTERNS}
+    return {"attack_patterns": ATTACK_PATTERNS + CHAT_TEMPLATE_PATTERNS}
 
 
 @app.post("/admin/api-keys", dependencies=[Depends(require_admin)])
@@ -232,6 +309,7 @@ async def create_api_key(payload: CreateKeyRequest, db: AsyncSession = Depends(g
     raw = generate_api_key()
     key = ApiKey(
         key_hash=hash_key(raw),
+        key_prefix=key_prefix(raw),
         org_name=payload.org_name,
         rate_limit_per_minute=payload.rate_limit_per_minute,
     )
@@ -248,6 +326,7 @@ async def list_api_keys(db: AsyncSession = Depends(get_db)) -> list[dict]:
         {
             "id": str(key.id),
             "org_name": key.org_name,
+            "key_prefix": key.key_prefix,
             "created_at": key.created_at.isoformat(),
             "rate_limit_per_minute": key.rate_limit_per_minute,
             "is_active": key.is_active,
@@ -285,7 +364,7 @@ async def stats(
     api_key: ApiKey = Depends(get_current_api_key),
 ) -> dict:
     from api.database import _dialect
-    start = datetime.utcnow() - timedelta(days=days)
+    start = utcnow_naive() - timedelta(days=days)
 
     if _dialect == "postgresql":
         from sqlalchemy import cast, Date
@@ -316,12 +395,13 @@ async def stats(
     # Pre-fill every day in the requested range with zeros
     daily_map: dict[str, dict[str, int | str]] = {}
     for i in range(days):
-        day = (datetime.utcnow() - timedelta(days=days - i - 1)).date().isoformat()
+        day = (utcnow_naive() - timedelta(days=days - i - 1)).date().isoformat()
         daily_map[day] = {"date": day, "SAFE": 0, "SUSPICIOUS": 0, "MALICIOUS": 0}
 
     # Merge database counts into the pre-filled map
     for row in daily_rows:
-        day = row.date.isoformat()
+        # Postgres returns a date, SQLite's date() a 'YYYY-MM-DD' string.
+        day = row.date if isinstance(row.date, str) else row.date.isoformat()
         if day not in daily_map:
             daily_map[day] = {"date": day, "SAFE": 0, "SUSPICIOUS": 0, "MALICIOUS": 0}
         daily_map[day][row.label] = row.count

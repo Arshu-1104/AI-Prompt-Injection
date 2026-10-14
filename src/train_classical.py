@@ -11,13 +11,10 @@ import numpy as np
 import pandas as pd
 
 try:
-    from sklearn.base import clone
     from sklearn.ensemble import RandomForestClassifier
     from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
-    from sklearn.model_selection import StratifiedKFold, cross_validate
     from sklearn.naive_bayes import MultinomialNB
-    from sklearn.pipeline import Pipeline
+    from sklearn.pipeline import FeatureUnion, Pipeline
     from sklearn.linear_model import LogisticRegression
 
     SKLEARN_AVAILABLE = True
@@ -26,11 +23,11 @@ except Exception as exc:  # pragma: no cover - exercised only when sklearn is br
     SKLEARN_AVAILABLE = False
     SKLEARN_IMPORT_ERROR = exc
 
-from src.preprocess import get_train_test_data
+from src.metrics import evaluate_split
+from src.preprocess import get_splits
 
 logger = logging.getLogger(__name__)
 
-SCORING = ["accuracy", "precision_weighted", "recall_weighted", "f1_weighted"]
 
 _FALLBACK_BANNER = (
     "\n"
@@ -130,8 +127,70 @@ class RuleBasedClassifier:
         return self.classes_[np.argmax(probs, axis=1)]
 
 
-def train_classical(random_state: int = 42, allow_rule_based_fallback: bool = False) -> dict:
-    """Train the classical model.
+def _word_tfidf() -> "TfidfVectorizer":
+    return TfidfVectorizer(max_features=20000, ngram_range=(1, 3), sublinear_tf=True)
+
+
+def _word_char_tfidf() -> "FeatureUnion":
+    # Character n-grams within word boundaries add robustness to spelling,
+    # spacing and leetspeak changes that word n-grams miss.
+    return FeatureUnion(
+        [
+            ("word", _word_tfidf()),
+            ("char", TfidfVectorizer(analyzer="char_wb", ngram_range=(2, 5), max_features=50000, sublinear_tf=True)),
+        ]
+    )
+
+
+# Inverse regularization strengths tried for logistic regression.
+LOGREG_C_GRID = (0.3, 1.0, 3.0, 10.0)
+
+
+def candidate_pipelines(random_state: int) -> dict[str, "Pipeline"]:
+    """The fixed candidate set; the winner is chosen on the validation split only.
+
+    class_weight="balanced": the training data is skewed toward MALICIOUS
+    (~60/40 in the source plus leetspeak variants) with the synthetic SUSPICIOUS
+    class as a thin minority. MultinomialNB has no class_weight, so it gets an
+    explicit uniform class_prior for the same reason.
+    """
+    candidates: dict[str, Pipeline] = {}
+    for features_name, features in (("word", _word_tfidf), ("word+char", _word_char_tfidf)):
+        for c in LOGREG_C_GRID:
+            candidates[f"logreg[{features_name},C={c:g}]"] = Pipeline(
+                steps=[
+                    ("tfidf", features()),
+                    ("classifier", LogisticRegression(max_iter=2000, C=c, random_state=random_state, class_weight="balanced")),
+                ]
+            )
+    candidates["random_forest"] = Pipeline(
+        steps=[
+            ("tfidf", _word_tfidf()),
+            ("classifier", RandomForestClassifier(n_estimators=200, max_depth=10, random_state=random_state, class_weight="balanced")),
+        ]
+    )
+    candidates["multinomial_nb"] = Pipeline(
+        steps=[
+            ("tfidf", TfidfVectorizer(max_features=20000, ngram_range=(1, 2), sublinear_tf=False)),
+            ("classifier", MultinomialNB(class_prior=[1 / 3, 1 / 3, 1 / 3])),
+        ]
+    )
+    return candidates
+
+
+def fit_classical(
+    random_state: int = 42,
+    allow_rule_based_fallback: bool = False,
+    extra_train: pd.DataFrame | None = None,
+) -> dict:
+    """Fit candidates on the official train split, pick the best by weighted F1 on
+    the official validation split, and report it on the test split. Saves nothing.
+
+    *random_state* seeds the classifiers only; the splits are the Hub's own.
+    *extra_train* (columns text, label) is appended to the training data only - used
+    by the clearly separate multi-source experiment in src.external_diagnostics.
+    Returns pipeline, best_name, validation (per candidate), test (3-class and
+    binary, see src.metrics.evaluate_split) and dataset (provenance).
 
     Raises RuntimeError if scikit-learn is unavailable, unless the caller
     explicitly passes allow_rule_based_fallback=True (e.g. for a quick local
@@ -153,106 +212,74 @@ def train_classical(random_state: int = 42, allow_rule_based_fallback: bool = Fa
                 "train_classical(allow_rule_based_fallback=True) explicitly."
             ) from SKLEARN_IMPORT_ERROR
 
-    train_df, test_df = get_train_test_data(random_state=random_state)
-    x_train = train_df["text"]
-    y_train = train_df["label"]
-    x_test = test_df["text"]
-    y_test = test_df["label"]
+    train_df, val_df, test_df, provenance = get_splits()
 
-    # Inject everyday SAFE examples into the training set only (never the
-    # held-out test set, to keep evaluation metrics honest).
-    EVERYDAY_SAFE_REPEATED = EVERYDAY_SAFE_EXAMPLES * 8
-
-    x_train = pd.concat(
-        [x_train, pd.Series(EVERYDAY_SAFE_REPEATED)], ignore_index=True
-    )
-    y_train = pd.concat(
-        [y_train, pd.Series(["SAFE"] * len(EVERYDAY_SAFE_REPEATED))], ignore_index=True
-    )
+    # Everyday SAFE examples go into the training set only.
+    everyday = EVERYDAY_SAFE_EXAMPLES * 8
+    x_train = pd.concat([train_df["text"], pd.Series(everyday)], ignore_index=True)
+    y_train = pd.concat([train_df["label"], pd.Series(["SAFE"] * len(everyday))], ignore_index=True)
+    if extra_train is not None and len(extra_train):
+        x_train = pd.concat([x_train, extra_train["text"].reset_index(drop=True)], ignore_index=True)
+        y_train = pd.concat([y_train, extra_train["label"].reset_index(drop=True)], ignore_index=True)
 
     if SKLEARN_AVAILABLE:
-        vectorizer = TfidfVectorizer(max_features=20000, ngram_range=(1, 3), sublinear_tf=True)
-        nb_vectorizer = TfidfVectorizer(
-            max_features=20000, ngram_range=(1, 2), sublinear_tf=False
-        )
-        # class_weight="balanced" is the key fix here: the training data is
-        # skewed toward MALICIOUS (source dataset ~60/40 malicious/safe, plus
-        # leetspeak augmentation on top) with SUSPICIOUS as a thin minority
-        # class. Without reweighting, both classifiers had little incentive
-        # to ever predict SUSPICIOUS and would default toward the majority
-        # classes even on ambiguous or borderline-benign text.
-        #
-        # MultinomialNB has no class_weight parameter. Left uncorrected, it
-        # learns its class priors directly from the raw 60/40-skewed training
-        # data, so a short/neutral/out-of-vocabulary input (e.g. "Hello")
-        # falls back on that skewed prior instead of a neutral one and gets
-        # pushed toward MALICIOUS. Passing an explicit uniform class_prior
-        # fixes this the same way class_weight="balanced" does above.
-        models = {
-            "logistic_regression": LogisticRegression(
-                max_iter=1000, C=1.0, random_state=random_state, class_weight="balanced"
-            ),
-            "random_forest": RandomForestClassifier(
-                n_estimators=200,
-                max_depth=10,
-                random_state=random_state,
-                class_weight="balanced",
-            ),
-            "multinomial_nb": MultinomialNB(class_prior=[1 / 3, 1 / 3, 1 / 3]),
-        }
-
-        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_state)
-        cv_results: dict[str, dict[str, dict[str, float]]] = {}
+        validation: dict[str, dict] = {}
         pipelines: dict[str, Pipeline] = {}
-
-        for name, model in models.items():
-            selected_vectorizer = nb_vectorizer if name == "multinomial_nb" else vectorizer
-            pipeline = Pipeline(
-                steps=[("tfidf", clone(selected_vectorizer)), ("classifier", clone(model))]
-            )
-            scores = cross_validate(
-                pipeline,
-                x_train,
-                y_train,
-                cv=cv,
-                scoring=SCORING,
-                n_jobs=-1,
-            )
-            cv_results[name] = {
-                metric: {
-                    "mean": float(np.mean(scores[f"test_{metric}"])),
-                    "std": float(np.std(scores[f"test_{metric}"])),
-                }
-                for metric in SCORING
-            }
+        for name, pipeline in candidate_pipelines(random_state).items():
+            pipeline.fit(x_train, y_train)
+            validation[name] = evaluate_split(val_df, _ordered_proba(pipeline, val_df["text"]))
             pipelines[name] = pipeline
-
-        best_name = max(cv_results, key=lambda m: cv_results[m]["f1_weighted"]["mean"])
+            print(f"  candidate {name:<28} validation 3-class F1_w={validation[name]['three_class']['f1_weighted']:.4f}")
+        best_name = max(validation, key=lambda m: validation[m]["three_class"]["f1_weighted"])
         best_pipeline = pipelines[best_name]
-        best_pipeline.fit(x_train, y_train)
-        predictions = best_pipeline.predict(x_test)
-        holdout_metrics = {
-            "accuracy": float(accuracy_score(y_test, predictions)),
-            "precision_weighted": float(precision_score(y_test, predictions, average="weighted")),
-            "recall_weighted": float(recall_score(y_test, predictions, average="weighted")),
-            "f1_weighted": float(f1_score(y_test, predictions, average="weighted")),
-        }
     else:
         best_name = "rule_based_fallback"
         best_pipeline = RuleBasedClassifier().fit(x_train.tolist(), y_train.tolist())
-        predictions = best_pipeline.predict(x_test.tolist())
-        y_true = y_test.to_numpy()
-        holdout_metrics = {
-            "accuracy": float(np.mean(predictions == y_true)),
-            "precision_weighted": float(np.mean(predictions == y_true)),
-            "recall_weighted": float(np.mean(predictions == y_true)),
-            "f1_weighted": float(np.mean(predictions == y_true)),
-        }
-        cv_results = {
-            "rule_based_fallback": {
-                metric: {"mean": holdout_metrics[metric], "std": 0.0} for metric in SCORING
-            }
-        }
+        validation = {best_name: evaluate_split(val_df, _ordered_proba(best_pipeline, val_df["text"]))}
+
+    return {
+        "pipeline": best_pipeline,
+        "best_name": best_name,
+        "selection": "best weighted F1 on the official validation split",
+        "validation": validation,
+        "test": evaluate_split(test_df, _ordered_proba(best_pipeline, test_df["text"])),
+        "dataset": provenance,
+    }
+
+
+def _ordered_proba(model, texts) -> np.ndarray:
+    """predict_proba with columns in src.metrics.LABELS order."""
+    from src.metrics import LABELS
+
+    probs = np.asarray(model.predict_proba(list(texts)), dtype=float)
+    classes = [str(c) for c in model.classes_]
+    return probs[:, [classes.index(label) for label in LABELS]]
+
+
+def candidate_table(validation: dict, best_name: str) -> dict:
+    """Reporting only: every candidate's validation score, ranked, and the margin
+    between the winner and the runner-up. Does not take part in selection."""
+    ranking = sorted(
+        ({"config": name, "f1_weighted": float(v["three_class"]["f1_weighted"])} for name, v in validation.items()),
+        key=lambda row: -row["f1_weighted"],
+    )
+    n_rows = int(validation[best_name]["three_class"]["n_samples"])
+    gap = ranking[0]["f1_weighted"] - ranking[1]["f1_weighted"] if len(ranking) > 1 else None
+    return {
+        "metric": "validation 3-class weighted F1",
+        "n_validation_rows": n_rows,
+        "winner": best_name,
+        "ranking": ranking,
+        "gap_best_to_second": gap,
+        # One validation row changing class moves weighted F1 by roughly 1/n.
+        "gap_in_validation_rows": None if gap is None else gap * n_rows,
+    }
+
+
+def train_classical(random_state: int = 42, allow_rule_based_fallback: bool = False) -> dict:
+    """Train the classical model and save it to models/classical_model.pkl."""
+    fitted = fit_classical(random_state, allow_rule_based_fallback)
+    best_pipeline, best_name = fitted["pipeline"], fitted["best_name"]
 
     root = Path(__file__).resolve().parents[1]
     models_dir = root / "models"
@@ -261,7 +288,7 @@ def train_classical(random_state: int = 42, allow_rule_based_fallback: bool = Fa
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
     joblib.dump(best_pipeline, models_dir / "classical_model.pkl")
-    if SKLEARN_AVAILABLE:
+    if not isinstance(best_pipeline, RuleBasedClassifier):
         fitted_vectorizer = best_pipeline.named_steps["tfidf"]
         joblib.dump(fitted_vectorizer, models_dir / "tfidf_vectorizer.pkl")
 
@@ -272,13 +299,32 @@ def train_classical(random_state: int = 42, allow_rule_based_fallback: bool = Fa
             metrics_data = json.load(f)
     metrics_data["classical_model"] = {
         "best_model": best_name,
-        "cross_validation": cv_results,
-        "holdout_test": holdout_metrics,
+        "random_state": random_state,
+        "selection": fitted["selection"],
+        "candidate_table": candidate_table(fitted["validation"], best_name),
+        "validation": fitted["validation"],
+        "test": fitted["test"],
+        "dataset": fitted["dataset"],
     }
     with open(metrics_path, "w", encoding="utf-8") as f:
         json.dump(metrics_data, f, indent=2)
 
-    print(f"Best classical model: {best_name}")
+    test = fitted["test"]
+    print(f"Best classical model (by validation weighted F1): {best_name}")
+    table = metrics_data["classical_model"]["candidate_table"]
+    if table["gap_best_to_second"] is not None:
+        print(
+            f"Margin over runner-up ({table['ranking'][1]['config']}): {table['gap_best_to_second']:.6f} "
+            f"(about {table['gap_in_validation_rows']:.1f} of {table['n_validation_rows']} validation rows)"
+        )
+    print(
+        f"Test 3-class: accuracy={test['three_class']['accuracy']:.4f} f1_weighted={test['three_class']['f1_weighted']:.4f} "
+        f"ece={test['three_class']['ece']:.4f}"
+    )
+    print(
+        f"Test binary (original Hub rows): accuracy={test['binary']['accuracy']:.4f} f1={test['binary']['f1']:.4f} "
+        f"fpr={test['binary']['false_positive_rate']:.4f} ece={test['binary']['ece']:.4f}"
+    )
     print(f"Saved classical model to {models_dir / 'classical_model.pkl'}")
     return metrics_data["classical_model"]
 

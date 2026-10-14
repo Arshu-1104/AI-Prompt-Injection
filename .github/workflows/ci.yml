@@ -8,27 +8,85 @@ on:
 
 jobs:
   test-backend:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: pip install -r requirements.txt
+      - run: pip install -r requirements.txt -r requirements-dev.txt
       - run: python -m src.load_data
+      - name: Record environment (dataset hashes, package versions, CPU)
+        # Lets a CI result be compared with a local run: same data, same packages?
+        run: |
+          python -c "import json; m = json.load(open('data/dataset_meta.json')); [print(s, v['rows'], v['sha256']) for s, v in m['processed'].items()]"
+          pip freeze | grep -i -E '^(scikit-learn|numpy|scipy|pandas|joblib)=='
+          python -c "import numpy; from numpy._core._multiarray_umath import __cpu_features__ as f; print('numpy AVX2', f.get('AVX2'), 'AVX512F', f.get('AVX512F'))"
+          grep -m1 'model name' /proc/cpuinfo
+      # After load_data so the real-data leakage tests run instead of skipping.
+      - run: pytest -q
       - run: python -m src.train_classical
       - name: Robustness check
+        # Regression guard, not an accuracy claim: the suite has only 61 prompts
+        # (one prompt = 1.6 points) and the classical model is retrained here.
+        # Gate (maintainer decision): binary flagged-or-not detection on the
+        # adversarial suite (SAFE vs not-SAFE) must be >= BINARY_ROBUSTNESS_BASELINE
+        # (a fraction, default 0.90). The 3-class exact-match score is printed and
+        # stored in the report but does not gate. A new variable name is used so a
+        # leftover ROBUSTNESS_BASELINE (the old 3-class gate) cannot apply here.
+        env:
+          BINARY_ROBUSTNESS_BASELINE: ${{ vars.BINARY_ROBUSTNESS_BASELINE }}
         run: |
-          python -m src.robustness > robustness_output.txt
-          cat robustness_output.txt
-          SCORE=$(grep "Robustness score:" robustness_output.txt | grep -oE '[0-9]+\.[0-9]+')
-          echo "Robustness score: $SCORE"
-          BASELINE="${{ vars.ROBUSTNESS_BASELINE }}"
-          if [ -z "$BASELINE" ]; then BASELINE="0.75"; fi
-          python -c "import sys; score=float('$SCORE'); baseline=float('$BASELINE'); sys.exit(0 if score >= baseline else 1)"
+          python -m src.robustness
+          python - <<'EOF'
+          import json, os, sys
+          report = json.load(open("artifacts/robustness_report.json", encoding="utf-8"))
+          binary = float(report["binary_detection_fraction"])
+          exact = float(report["robustness_fraction"])
+          baseline = float(os.environ.get("BINARY_ROBUSTNESS_BASELINE") or 0.90)
+          if not 0 < baseline <= 1:
+              sys.exit(f"BINARY_ROBUSTNESS_BASELINE must be a fraction in (0, 1], got {baseline}")
+          print(f"Binary detection {binary:.4f} vs baseline {baseline:.4f} (gating)")
+          print(f"3-class exact match {exact:.4f} (reported, not gating)")
+          sys.exit(0 if binary >= baseline else 1)
+          EOF
+
+  test-postgres:
+    # Migrations and the API test suite against a real Postgres (production uses
+    # Postgres; SQLite hides type mismatches such as UUID vs VARCHAR columns).
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: promptguard_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/promptguard_test
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/promptguard_test
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-render.txt -r requirements-dev.txt datasets
+      - name: Migrations up, down, up
+        run: |
+          alembic upgrade head
+          alembic downgrade base
+          alembic upgrade head
+      - name: pytest against Postgres
+        run: pytest -q
 
   test-dashboard:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: dashboard
@@ -43,7 +101,7 @@ jobs:
       - run: npm run build
 
   test-extension:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: extension
