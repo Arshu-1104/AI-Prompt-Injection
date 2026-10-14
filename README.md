@@ -664,12 +664,26 @@ Features: model switcher, single prompt analysis, risk badge, confidence bar, pa
    needs an `HF_TOKEN` with read access to those repos. Without it, the configured defaults report
    `download_failed` when heavy models are enabled; serve from a local path via `BERT_MODEL_ID` /
    `GUARD_MODEL_ID` instead. The generated model card states the data licenses (item 7).
-2. **Robustness gate: binary, baseline 0.90.** CI gates on binary flagged-or-not detection over the
-   `src/robustness.py` adversarial suite: SAFE vs not-SAFE must be at least `BINARY_ROBUSTNESS_BASELINE`
-   (default 0.90). Rationale: the SUSPICIOUS-vs-MALICIOUS expectations in the suite are hand-assigned
-   and subjective, and the synthetic SUSPICIOUS training class does not match them. What matters for
-   protection is whether an attack is flagged at all. The 3-class exact-match score is still computed
-   and reported in every robustness report and CI log, but it does not gate.
+2. **Robustness gate: a regression guard at 0.90, not an accuracy claim.** CI checks binary
+   flagged-or-not detection over the 61-prompt `src/robustness.py` adversarial suite: SAFE vs not-SAFE
+   must be at least `BINARY_ROBUSTNESS_BASELINE` (default 0.90). It exists to catch a model that gets
+   clearly worse; it does not measure real-world accuracy. Rationale for gating on the binary result:
+   the SUSPICIOUS-vs-MALICIOUS expectations in the suite are hand-assigned and subjective, and the
+   synthetic SUSPICIOUS training class does not match them. What matters for protection is whether an
+   attack is flagged at all. The 3-class exact-match score is still computed and reported in every
+   robustness report and CI log, but it does not gate. Current results:
+
+   | run | binary (gating) | Wilson 95% interval | 3-class exact match (reported) |
+   |---|---|---|---|
+   | local (Windows, Intel Core Ultra 7 255H) | 57/61 = 0.9344 | [0.843, 0.974] | 43/61 = 0.7049 |
+   | CI (GitHub `ubuntu-24.04` runner) | 56/61 = 0.9180 | [0.822, 0.965] | 44/61 = 0.7213 |
+
+   The classical model is retrained from scratch in each environment. The suite is small: one prompt
+   is 1.6 points, so scores can differ by one prompt between environments. Here the two runs selected
+   different candidates on validation: CI picked `logreg[word,C=10]`, the local run
+   `logreg[word+char,C=1]`. Package versions were identical (scikit-learn 1.6.1, numpy 2.5.4,
+   scipy 1.18.1, pandas 3.0.6, Python 3.12), and the local result is reproducible. The exact cause of
+   the difference is not yet identified (see the CI environment step).
 3. **Synthetic SUSPICIOUS class.** It comes from appending a manipulation phrase to SAFE rows, which
    is easy to detect (near-perfect SUSPICIOUS F1). That says little about real ambiguous prompts;
    use the binary metrics for comparisons.
@@ -707,7 +721,8 @@ Features: model switcher, single prompt analysis, risk badge, confidence bar, pa
 
 - Train and publish bert/guard (Hub), then compare all models with the paired tests
 - A real (non-synthetic) SUSPICIOUS class, or a binary-only product mode
-- Better out-of-distribution generalization: train on more sources, hard negatives from the external
+- Better out-of-distribution generalization: train on more sources, hard negatives fro
+m the external
   sets' domains (never their test splits), multilingual data
 - Detect special-token payloads instead of stripping them in `clean_text`
 - Grow every robustness category to n ≥ 20

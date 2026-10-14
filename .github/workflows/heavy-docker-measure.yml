@@ -30,7 +30,7 @@ permissions:
 
 jobs:
   measure:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       IMAGE: promptguard-api:heavy
@@ -100,7 +100,7 @@ jobs:
             echo "| image size (\`docker image inspect\`) | $SIZE |"
             echo "| memory at idle (\`docker stats\`) | $IDLE |"
             echo "| memory after /predict on: ${available:-none} | $AFTER |"
-            echo "| runner | ubuntu-latest, WEB_CONCURRENCY=1 |"
+            echo "| runner | ubuntu-24.04, WEB_CONCURRENCY=1 |"
             echo
             echo "/health:"
             echo '```json'
