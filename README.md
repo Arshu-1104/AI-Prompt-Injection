@@ -120,6 +120,30 @@ and the tables in `artifacts/tables/`. Every file records the dataset name, revi
 sizes and license. Results for all three models and the ProtectAI baseline are under
 [Paper results](#paper-results) and [External evaluation](#external-evaluation).
 
+### Classical model selection
+
+`python -m src.train_classical` fits ten fixed candidates on the official train split and keeps the
+one with the highest 3-class weighted F1 on the official validation split (1,162 rows). The full
+ranking, the winner and the margin over the runner-up are saved in `artifacts/metrics.json`
+(`classical_model.candidate_table`). Validation scores (local run; the later CI run printed the same
+values to 4 decimals):
+
+| rank | configuration | validation weighted F1 |
+|---|---|---|
+| 1 (selected) | `logreg[word+char,C=1]` | 0.960455 |
+| 2 | `logreg[word,C=3]` | 0.959559 |
+| 3 | `logreg[word+char,C=10]` | 0.959555 |
+| 4 | `logreg[word,C=10]` | 0.959555 |
+| 5 | `logreg[word+char,C=3]` | 0.958702 |
+| 6–10 | `logreg[word+char,C=0.3]`, `logreg[word,C=1]`, `logreg[word,C=0.3]`, `multinomial_nb`, `random_forest` | 0.957010 – 0.847888 |
+
+The winner leads by **0.000896**. One validation row changing class moves weighted F1 by roughly
+1/1,162 ≈ 0.00086, so the margin is about **one validation row**, the smallest possible nonzero
+difference. The top four are within 0.0009 of each other. Any perturbation that flips a single
+borderline validation prediction can change the winner, and run-to-run variation can exceed the
+margin: the earlier CI run scored `logreg[word,C=10]` at 0.9621 (vs 0.9596 here) and selected it.
+The selection rule and its tie-breaking are unchanged.
+
 ---
 
 ## Project Structure
@@ -676,14 +700,18 @@ Features: model switcher, single prompt analysis, risk badge, confidence bar, pa
    | run | binary (gating) | Wilson 95% interval | 3-class exact match (reported) |
    |---|---|---|---|
    | local (Windows, Intel Core Ultra 7 255H) | 57/61 = 0.9344 | [0.843, 0.974] | 43/61 = 0.7049 |
-   | CI (GitHub `ubuntu-24.04` runner) | 56/61 = 0.9180 | [0.822, 0.965] | 44/61 = 0.7213 |
+   | later CI run (`ubuntu-24.04`, AMD EPYC 7763) | 57/61 = 0.9344 | [0.843, 0.974] | 43/61 = 0.7049 |
+   | earlier CI run (`ubuntu-24.04`) | 56/61 = 0.9180 | [0.822, 0.965] | 44/61 = 0.7213 |
 
    The classical model is retrained from scratch in each environment. The suite is small: one prompt
-   is 1.6 points, so scores can differ by one prompt between environments. Here the two runs selected
-   different candidates on validation: CI picked `logreg[word,C=10]`, the local run
-   `logreg[word+char,C=1]`. Package versions were identical (scikit-learn 1.6.1, numpy 2.5.4,
-   scipy 1.18.1, pandas 3.0.6, Python 3.12), and the local result is reproducible. The exact cause of
-   the difference is not yet identified (see the CI environment step).
+   is 1.6 points, so scores can differ by one prompt between environments. A later CI run, on
+   identical data (same split sha256s) and identical packages (scikit-learn 1.6.1, numpy 2.5.4,
+   scipy 1.18.1, pandas 3.0.6, Python 3.12), reproduced the local result and the local choice,
+   `logreg[word+char,C=1]`. The earlier CI run selected a different classical configuration,
+   `logreg[word,C=10]`, and scored 56/61. **The cause is unconfirmed.** The selection step is probably
+   a near-tie: the winner leads by about one validation row (see
+   [Classical model selection](#classical-model-selection)). CI now records the dataset hashes,
+   package versions and CPU on every run, so a future mismatch can be traced.
 3. **Synthetic SUSPICIOUS class.** It comes from appending a manipulation phrase to SAFE rows, which
    is easy to detect (near-perfect SUSPICIOUS F1). That says little about real ambiguous prompts;
    use the binary metrics for comparisons.

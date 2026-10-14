@@ -256,6 +256,26 @@ def _ordered_proba(model, texts) -> np.ndarray:
     return probs[:, [classes.index(label) for label in LABELS]]
 
 
+def candidate_table(validation: dict, best_name: str) -> dict:
+    """Reporting only: every candidate's validation score, ranked, and the margin
+    between the winner and the runner-up. Does not take part in selection."""
+    ranking = sorted(
+        ({"config": name, "f1_weighted": float(v["three_class"]["f1_weighted"])} for name, v in validation.items()),
+        key=lambda row: -row["f1_weighted"],
+    )
+    n_rows = int(validation[best_name]["three_class"]["n_samples"])
+    gap = ranking[0]["f1_weighted"] - ranking[1]["f1_weighted"] if len(ranking) > 1 else None
+    return {
+        "metric": "validation 3-class weighted F1",
+        "n_validation_rows": n_rows,
+        "winner": best_name,
+        "ranking": ranking,
+        "gap_best_to_second": gap,
+        # One validation row changing class moves weighted F1 by roughly 1/n.
+        "gap_in_validation_rows": None if gap is None else gap * n_rows,
+    }
+
+
 def train_classical(random_state: int = 42, allow_rule_based_fallback: bool = False) -> dict:
     """Train the classical model and save it to models/classical_model.pkl."""
     fitted = fit_classical(random_state, allow_rule_based_fallback)
@@ -281,6 +301,7 @@ def train_classical(random_state: int = 42, allow_rule_based_fallback: bool = Fa
         "best_model": best_name,
         "random_state": random_state,
         "selection": fitted["selection"],
+        "candidate_table": candidate_table(fitted["validation"], best_name),
         "validation": fitted["validation"],
         "test": fitted["test"],
         "dataset": fitted["dataset"],
@@ -290,6 +311,12 @@ def train_classical(random_state: int = 42, allow_rule_based_fallback: bool = Fa
 
     test = fitted["test"]
     print(f"Best classical model (by validation weighted F1): {best_name}")
+    table = metrics_data["classical_model"]["candidate_table"]
+    if table["gap_best_to_second"] is not None:
+        print(
+            f"Margin over runner-up ({table['ranking'][1]['config']}): {table['gap_best_to_second']:.6f} "
+            f"(about {table['gap_in_validation_rows']:.1f} of {table['n_validation_rows']} validation rows)"
+        )
     print(
         f"Test 3-class: accuracy={test['three_class']['accuracy']:.4f} f1_weighted={test['three_class']['f1_weighted']:.4f} "
         f"ece={test['three_class']['ece']:.4f}"
