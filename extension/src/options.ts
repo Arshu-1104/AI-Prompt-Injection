@@ -1,7 +1,6 @@
-type HealthResponse = { status: "ok" | "error" | "timeout"; message?: string };
-type Stored = { endpoint?: string; apiKey?: string; enabled?: boolean; model?: string; slowTimeoutSeconds?: number };
+import { DEFAULT_SLOW_TIMEOUT_SECONDS, loadSettings, saveSettings } from "./storage";
 
-const DEFAULT_SLOW_TIMEOUT_SECONDS = 10;
+type HealthResponse = { status: "ok" | "error" | "timeout"; message?: string };
 
 const endpoint = document.getElementById("endpoint") as HTMLInputElement;
 const apiKey = document.getElementById("apiKey") as HTMLInputElement;
@@ -19,12 +18,12 @@ const saveBtn = document.getElementById("saveBtn") as HTMLButtonElement;
 const testStatus = document.getElementById("testStatus") as HTMLSpanElement;
 const msg = document.getElementById("msg") as HTMLDivElement;
 
-void chrome.storage.sync.get({ endpoint: "", apiKey: "", enabled: true, model: "classical", slowTimeoutSeconds: DEFAULT_SLOW_TIMEOUT_SECONDS }).then((data: Stored) => {
-  endpoint.value = data.endpoint ?? "";
-  apiKey.value = data.apiKey ?? "";
-  enabled.checked = data.enabled !== false;
-  model.value = data.model ?? "classical";
-  slowTimeout.value = String(data.slowTimeoutSeconds ?? DEFAULT_SLOW_TIMEOUT_SECONDS);
+void loadSettings().then((data) => {
+  endpoint.value = data.endpoint;
+  apiKey.value = data.apiKey;
+  enabled.checked = data.enabled;
+  model.value = data.model;
+  slowTimeout.value = String(data.slowTimeoutSeconds || DEFAULT_SLOW_TIMEOUT_SECONDS);
   updateSlowNote();
 });
 
@@ -40,7 +39,7 @@ saveBtn.addEventListener("click", () => {
     void chrome.permissions.request({ origins: [`${url.origin}/*`] }, (granted) => {
       if (!granted) { msg.textContent = "Permission denied"; return; }
       const seconds = Math.min(60, Math.max(1, Number(slowTimeout.value) || DEFAULT_SLOW_TIMEOUT_SECONDS));
-      void chrome.storage.sync.set({ endpoint: endpoint.value, apiKey: apiKey.value, enabled: enabled.checked, model: model.value, slowTimeoutSeconds: seconds }).then(() => { msg.textContent = "Saved"; });
+      void saveSettings({ endpoint: endpoint.value, apiKey: apiKey.value, enabled: enabled.checked, model: model.value, slowTimeoutSeconds: seconds }).then(() => { msg.textContent = "Saved"; });
     });
   } catch {
     msg.textContent = "Invalid URL";
