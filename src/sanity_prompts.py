@@ -1,7 +1,6 @@
 """Hand-picked prompts covering each attack tier.
 
-Used by test_all_tiers.py for a side-by-side comparison and by the transformer
-training scripts as a post-training sanity check.
+Used by the transformer training scripts as a post-training sanity check.
 """
 
 TEST_PROMPTS = {
