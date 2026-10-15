@@ -7,8 +7,13 @@ async function proxyRequest(req: NextRequest, pathSegments: string[]) {
   const session = await auth();
   if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
+  // The localhost fallback is for `next dev` only; production must set API_URL.
+  const apiUrl = process.env.API_URL || (process.env.NODE_ENV === "production" ? undefined : "http://localhost:8000");
+  if (!apiUrl) {
+    return NextResponse.json({ error: "Dashboard misconfigured: API_URL is not set" }, { status: 500 });
+  }
   const path = pathSegments.join("/");
-  const url = `${process.env.API_URL ?? "http://localhost:8000"}/${path}${req.nextUrl.search}`;
+  const url = `${apiUrl.replace(/\/+$/, "")}/${path}${req.nextUrl.search}`;
   const headers: Record<string, string> = {
     "X-Admin-Key": process.env.ADMIN_SECRET_KEY ?? "",
   };

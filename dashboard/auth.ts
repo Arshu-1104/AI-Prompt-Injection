@@ -1,15 +1,10 @@
 import NextAuthImport from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 import bcrypt from "bcryptjs";
+import { authConfig } from "./auth.config";
 
 export const { handlers, auth, signIn, signOut } = (NextAuthImport as CallableFunction)({
-  session: { strategy: "jwt", maxAge: 8 * 60 * 60 },
-  pages: { signIn: "/login" },
-  // Render (like any non-Vercel host) sits behind a reverse proxy. Auth.js v5
-  // rejects requests whose Host header it doesn't recognize unless explicitly
-  // told to trust it — without this, session verification silently fails on
-  // every deployment platform except Vercel.
-  trustHost: true,
+  ...authConfig,
   providers: [
     Credentials({
       credentials: {
@@ -28,10 +23,4 @@ export const { handlers, auth, signIn, signOut } = (NextAuthImport as CallableFu
       },
     }),
   ],
-  callbacks: {
-    authorized({ auth: session, request }: { auth: { user?: unknown } | null; request: { nextUrl: { pathname: string } } }) {
-      if (request.nextUrl.pathname.startsWith("/dashboard")) return Boolean(session?.user);
-      return true;
-    },
-  },
 });
