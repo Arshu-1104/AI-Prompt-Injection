@@ -94,6 +94,20 @@ function sendPredict(text: string, parts: BadgeParts): void {
   }
 }
 
+// Asks the background worker whether checking is switched on and configured. The prompt
+// text is read only after a "yes", so nothing is read or sent while disabled.
+function whenActive(onActive: () => void, onInactive: () => void): void {
+  if (!chrome.runtime?.id) { onInactive(); return; }
+  try {
+    chrome.runtime.sendMessage({ type: "status" }, (response: { active?: boolean } | undefined) => {
+      if (chrome.runtime.lastError || !response?.active) { onInactive(); return; }
+      onActive();
+    });
+  } catch {
+    onInactive();
+  }
+}
+
 function decorate(input: Element): void {
   if (!(input instanceof HTMLElement)) return;
   input.dataset[decorated] = "1";
@@ -102,11 +116,13 @@ function decorate(input: Element): void {
     const existing = debounceTimers.get(input);
     if (existing) window.clearTimeout(existing);
     debounceTimers.set(input, window.setTimeout(() => {
-      const text = getText(input).trim();
-      if (!text) { parts.badge.className = "badge hidden"; return; }
-      parts.badge.className = "badge loading";
-      parts.badge.textContent = "Checking";
-      sendPredict(text, parts);
+      whenActive(() => {
+        const text = getText(input).trim();
+        if (!text) { parts.badge.className = "badge hidden"; return; }
+        parts.badge.className = "badge loading";
+        parts.badge.textContent = "Checking";
+        sendPredict(text, parts);
+      }, () => { parts.badge.className = "badge hidden"; });
     }, 500));
   };
   input.addEventListener("input", listener);

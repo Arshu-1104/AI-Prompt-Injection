@@ -1,18 +1,21 @@
 type PredictRequest = { type: "predict"; payload: { text: string } };
 type HealthRequest = { type: "health_check"; payload: { endpoint: string } };
-type MessageRequest = PredictRequest | HealthRequest;
+type StatusRequest = { type: "status" };
+type MessageRequest = PredictRequest | HealthRequest | StatusRequest;
 type MessageResponse =
   | { status: "unconfigured" }
   | { status: "ok"; label?: string; confidence?: number; risk_score?: number; attack_patterns?: string[] }
   | { status: "timeout" }
   | { status: "error"; message: string };
 
-type StoredConfig = { endpoint?: string; apiKey?: string; enabled?: boolean; model?: string; slowTimeoutSeconds?: number };
+import { DEFAULT_SLOW_TIMEOUT_SECONDS, isActive, loadSettings, migrateApiKey } from "./storage";
 
 const MODELS = ["classical", "bert", "guard"];
 const CLASSICAL_TIMEOUT_MS = 3000;
-// bert / guard are transformer models and much slower on a CPU server.
-const DEFAULT_SLOW_TIMEOUT_SECONDS = 10;
+
+// Move an apiKey saved by versions before 1.1.0 out of synced storage (see storage.ts).
+chrome.runtime.onInstalled.addListener(() => { void migrateApiKey(); });
+chrome.runtime.onStartup.addListener(() => { void migrateApiKey(); });
 
 function withTimeout(ms: number): { signal: AbortSignal; cancel: () => void } {
   const controller = new AbortController();
@@ -21,10 +24,11 @@ function withTimeout(ms: number): { signal: AbortSignal; cancel: () => void } {
 }
 
 async function handlePredict(text: string): Promise<MessageResponse> {
-  const config = await chrome.storage.sync.get({ enabled: true, endpoint: "", apiKey: "", model: "classical", slowTimeoutSeconds: DEFAULT_SLOW_TIMEOUT_SECONDS }) as StoredConfig;
-  const model = MODELS.includes(config.model ?? "") ? config.model : "classical";
-  if (config.enabled === false || !config.endpoint || !config.apiKey) return { status: "unconfigured" };
-  const timeoutMs = model === "classical" ? CLASSICAL_TIMEOUT_MS : (config.slowTimeoutSeconds ?? DEFAULT_SLOW_TIMEOUT_SECONDS) * 1000;
+  const config = await loadSettings();
+  const model = MODELS.includes(config.model) ? config.model : "classical";
+  if (!isActive(config)) return { status: "unconfigured" };
+  // bert / guard are transformer models and much slower on a CPU server.
+  const timeoutMs = model === "classical" ? CLASSICAL_TIMEOUT_MS : (config.slowTimeoutSeconds || DEFAULT_SLOW_TIMEOUT_SECONDS) * 1000;
   const timeout = withTimeout(timeoutMs);
   try {
     const response = await fetch(`${config.endpoint.replace(/\/$/, "")}/predict`, {
@@ -63,7 +67,13 @@ async function handleHealth(endpoint: string): Promise<MessageResponse> {
   }
 }
 
-chrome.runtime.onMessage.addListener((request: MessageRequest, _sender, sendResponse: (response: MessageResponse) => void) => {
+chrome.runtime.onMessage.addListener((request: MessageRequest, _sender, sendResponse: (response: MessageResponse | { active: boolean }) => void) => {
+  if (request.type === "status") {
+    // Lets the content script decide whether to read the prompt box at all, without
+    // ever handing it the API key.
+    void loadSettings().then((settings) => sendResponse({ active: isActive(settings) }));
+    return true;
+  }
   if (request.type === "predict") {
     void handlePredict(request.payload.text).then(sendResponse);
     return true;
