@@ -35,11 +35,9 @@ PromptGuard
 Flags likely prompt-injection text as you type in ChatGPT, Claude and Gemini, using your own PromptGuard API.
 
 The Chrome docs limit both the store summary and the manifest `description` to 132 characters, and
-the manifest description is shown in the Chrome Web Store. The current manifest description is
-"Real-time prompt injection detection for LLM chat interfaces". Whether the dashboard takes the
-summary from the manifest or lets you edit it: **verify in the dashboard**. If it is taken from the
-manifest, either keep the current text or change `description` in `extension/manifest.json` and
-rebuild the zip.
+the manifest description is shown in the Chrome Web Store. The `description` in
+`extension/manifest.json` is this exact text, so the summary is the same whether the dashboard takes
+it from the manifest or lets you edit it (**verify in the dashboard** which one it does).
 
 **Detailed description**
 
