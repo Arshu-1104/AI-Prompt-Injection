@@ -82,6 +82,23 @@ jobs:
           alembic upgrade head
           alembic downgrade base
           alembic upgrade head
+      - name: Migrations adopt an unversioned pre-0002 database (tables built by create_all)
+        run: |
+          alembic downgrade 0001_initial_schema
+          python - <<'EOF'
+          import asyncio
+          from sqlalchemy import text
+          from api.database import engine
+
+          async def drop_version_table():
+              async with engine.begin() as connection:
+                  await connection.execute(text("DROP TABLE alembic_version"))
+              await engine.dispose()
+
+          asyncio.run(drop_version_table())
+          EOF
+          alembic upgrade head
+          alembic current | grep -q 0002_api_key_prefix
       - name: pytest against Postgres
         run: pytest -q
 

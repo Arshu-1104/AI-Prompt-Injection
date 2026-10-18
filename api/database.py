@@ -86,6 +86,24 @@ class Prediction(Base):
     attack_patterns: Mapped[list] = mapped_column(JSON, default=list)
     latency_ms: Mapped[float] = mapped_column(Float, nullable=False)
 
+def missing_columns(sync_connection) -> list[str]:
+    """Model columns absent from the live database, as "table.column".
+
+    create_all() only creates missing tables; it never adds columns to existing
+    ones. A database whose tables predate a migration (e.g. api_keys without
+    key_prefix when 0002 never ran) therefore starts fine and then fails every
+    query that touches the new column. Used at startup to log that clearly.
+    """
+    inspector = _sa.inspect(sync_connection)
+    missing = []
+    for table in Base.metadata.sorted_tables:
+        if not inspector.has_table(table.name):
+            continue
+        present = {column["name"] for column in inspector.get_columns(table.name)}
+        missing += [f"{table.name}.{column.name}" for column in table.columns if column.name not in present]
+    return missing
+
+
 async def get_db():
     async with AsyncSessionLocal() as session:
         yield session
