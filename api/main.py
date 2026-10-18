@@ -23,7 +23,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import PlainTextResponse
 
 from api.auth import generate_api_key, get_current_api_key, hash_input, hash_key, key_prefix, require_admin
-from api.database import ApiKey, AsyncSessionLocal, Base, Prediction, engine, get_db, utcnow_naive
+from api.database import ApiKey, AsyncSessionLocal, Base, Prediction, engine, get_db, missing_columns, utcnow_naive
 from src.model_sources import ModelUnavailableError
 from src.predict import PromptAnalyzer
 from src.preprocess import ATTACK_PATTERNS, CHAT_TEMPLATE_PATTERNS
@@ -110,6 +110,14 @@ def _load_analyzer(app: FastAPI, model_type: str, **kwargs) -> None:
 async def lifespan(app: FastAPI):
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
+        schema_gaps = await connection.run_sync(missing_columns)
+    if schema_gaps:
+        logger.error(
+            "Database schema is out of date, missing columns: %s. Requests that use them will fail "
+            "with 500. Run `alembic upgrade head` against this DATABASE_URL (on Render, add it to "
+            "the build command).",
+            ", ".join(schema_gaps),
+        )
     app.state.analyzers = {}
     app.state.model_status = {}
     # Heavy transformer models are opt-in: they need torch/transformers (requirements-heavy.txt)

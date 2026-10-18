@@ -20,6 +20,19 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # A database first built by the app's create_all() has these tables but no
+    # alembic_version row. Skip whatever exists so `alembic upgrade head` adopts
+    # it and runs the later migrations, instead of failing with "already exists".
+    inspector = sa.inspect(op.get_bind())
+    if not inspector.has_table("api_keys"):
+        _create_api_keys()
+    if not inspector.has_table("predictions"):
+        _create_predictions()
+    if "ix_predictions_timestamp" not in {index["name"] for index in inspector.get_indexes("predictions")}:
+        op.create_index(op.f("ix_predictions_timestamp"), "predictions", ["timestamp"], unique=False)
+
+
+def _create_api_keys() -> None:
     op.create_table(
         "api_keys",
         sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
@@ -32,6 +45,9 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("key_hash"),
     )
+
+
+def _create_predictions() -> None:
     op.create_table(
         "predictions",
         sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
@@ -48,7 +64,6 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["api_key_id"], ["api_keys.id"]),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index(op.f("ix_predictions_timestamp"), "predictions", ["timestamp"], unique=False)
 
 
 def downgrade() -> None:
