@@ -102,9 +102,16 @@ def test_upgrade_head_on_an_empty_database(tmp_path, monkeypatch):
 
 def test_startup_logs_missing_columns(monkeypatch, caplog):
     from fastapi.testclient import TestClient
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
 
     import api.main as main
+    from api.database import DATABASE_URL, _engine_kwargs
 
+    # This TestClient runs on a new event loop; asyncpg connections pooled by the
+    # session client's loop cannot be reused here (see conftest.test_session).
+    kwargs = {k: v for k, v in _engine_kwargs.items() if k not in {"pool_pre_ping", "pool_recycle"}}
+    monkeypatch.setattr(main, "engine", create_async_engine(DATABASE_URL, poolclass=NullPool, **kwargs))
     monkeypatch.setattr(main, "missing_columns", lambda connection: ["api_keys.key_prefix"])
     with caplog.at_level(logging.ERROR, logger="uvicorn.error"):
         with TestClient(main.app):
