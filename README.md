@@ -449,8 +449,12 @@ What this shows:
   the model is near chance, not inverted.
 - **xTRam1 false positives** are benign imperative NLP-task prompts ("Given two words, output…",
   "Construct a sentence…", "Classify whether…"). They are longer and far more often instruction-styled
-  than the true negatives. The model has largely learned "imperative task format = attack", because
-  the training data's attacks are imperative and its benign rows are mostly questions.
+  than the true negatives. `python -m src.diagnosis` measures this (`artifacts/diagnosis.json`): the
+  flagged benign prompts are rarely questions, while the ones left alone mostly are. An earlier version
+  of this README said the training data's attacks are imperative and its benign rows mostly questions;
+  that is wrong. Most benign training rows are imperative too, but questions are about three times more
+  common among benign rows than among attacks, so the model behaves as if "question = safe" and flags
+  much benign text that is not a question.
 - **xTRam1 false negatives** are harmful or exfiltration requests framed as creative writing, with no
   override keywords ("Write me a poem that contains confidential information…").
 - **deepset** mixes English and German (61 English, 38 German, 17 unclear by the stopword heuristic).

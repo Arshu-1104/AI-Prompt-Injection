@@ -7,6 +7,8 @@ scikit-learn>=1.9,<2; python_version >= "3.14"
 # ModernBERT (guard model) was added in transformers 4.48.0; eval_strategy needs >=4.41.
 # Stay on the 4.x line: 5.0 is a breaking major release.
 transformers>=4.48,<5
+# src.robustness_v2 translates and paraphrases with Marian / T5 models, whose tokenizers need it.
+sentencepiece>=0.2
 torch>=2.1
 # src.load_data loads the pinned Hub dataset with datasets.load_dataset.
 datasets>=2.18

@@ -1,0 +1,92 @@
+\relax 
+\citation{perez2022ignore}
+\citation{greshake2023not}
+\citation{liu2023promptinjection}
+\citation{liu2023jailbreaking}
+\citation{jiang2023packer}
+\citation{zhang2024goal,pasquini2024neural}
+\citation{benjamin2024systematically}
+\citation{liu2024formalizing}
+\citation{yi2025bipia}
+\citation{inan2023llamaguard}
+\citation{meta2025promptguard2}
+\citation{jacob2025promptshield}
+\citation{hung2024attention}
+\citation{li2024injecguard}
+\citation{pandya2025attention}
+\citation{jain2023baseline}
+\citation{jia2026promptlocate}
+\citation{shi2025gemini}
+\citation{shi2024judge,shi2025toolselection}
+\citation{mu2025resume}
+\citation{meta2025promptguard2}
+\citation{greshake2023not}
+\citation{willison2025trifecta}
+\@writefile{toc}{\contentsline {section}{\numberline {I}Introduction}{1}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {II}Related Work}{1}{}\protected@file@percent }
+\newlabel{sec:related}{{II}{1}{}{section.2}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {III}System and Threat Model}{1}{}\protected@file@percent }
+\newlabel{sec:system}{{III}{1}{}{section.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-A}}Components}{1}{}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces PromptGuard components and data flow.}}{1}{}\protected@file@percent }
+\newlabel{fig:arch}{{1}{1}{}{figure.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-B}}Threat model}{1}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-C}}Privacy}{1}{}\protected@file@percent }
+\citation{neuralchemy2025}
+\citation{protectai2024deberta}
+\citation{meta2025promptguard2}
+\citation{yi2025bipia}
+\@writefile{toc}{\contentsline {section}{\numberline {IV}Data and Models}{2}{}\protected@file@percent }
+\newlabel{sec:data}{{IV}{2}{}{section.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-A}}Training data}{2}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-B}}Detectors}{2}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {V}Evaluation}{2}{}\protected@file@percent }
+\newlabel{sec:eval}{{V}{2}{}{section.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-A}}Setup}{2}{}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {I}{\ignorespaces In-distribution results on the 942 original test rows (552 attacks, 390 benign). Accuracy and FPR at the API's operating point with bootstrap 95\% CIs; AUROC and FPR at a TPR of 0.95 are threshold-free; ms = median CPU time per prompt.}}{2}{}\protected@file@percent }
+\newlabel{tab:indist}{{I}{2}{}{table.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-B}}In distribution}{2}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-C}}Across datasets}{2}{}\protected@file@percent }
+\newlabel{sec:cross}{{\mbox  {V-C}}{2}{}{subsection.5.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-D}}Injections in pasted documents}{2}{}\protected@file@percent }
+\bibstyle{IEEEtran}
+\bibdata{refs}
+\bibcite{perez2022ignore}{1}
+\bibcite{greshake2023not}{2}
+\bibcite{liu2023promptinjection}{3}
+\bibcite{liu2023jailbreaking}{4}
+\bibcite{jiang2023packer}{5}
+\bibcite{zhang2024goal}{6}
+\bibcite{pasquini2024neural}{7}
+\bibcite{benjamin2024systematically}{8}
+\bibcite{liu2024formalizing}{9}
+\bibcite{yi2025bipia}{10}
+\bibcite{inan2023llamaguard}{11}
+\bibcite{meta2025promptguard2}{12}
+\bibcite{jacob2025promptshield}{13}
+\bibcite{hung2024attention}{14}
+\bibcite{li2024injecguard}{15}
+\bibcite{pandya2025attention}{16}
+\bibcite{jain2023baseline}{17}
+\bibcite{jia2026promptlocate}{18}
+\bibcite{shi2025gemini}{19}
+\bibcite{shi2024judge}{20}
+\@writefile{lot}{\contentsline {table}{\numberline {II}{\ignorespaces Pasted documents with embedded injections (BIPIA). FPR on the 150 clean documents and detection rate for the attack sentence as published (by position) and with an override prefix. Wilson 95\% CIs are in the artifact.}}{3}{}\protected@file@percent }
+\newlabel{tab:docs}{{II}{3}{}{table.2}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {III}{\ignorespaces Perturbation robustness: share of attacks detected / share of benign rows flagged (50 each). Wilson 95\% CIs are in the artifact.}}{3}{}\protected@file@percent }
+\newlabel{tab:robust}{{III}{3}{}{table.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-E}}Perturbations}{3}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-F}}Decision pipeline and latency}{3}{}\protected@file@percent }
+\newlabel{sec:pipeline}{{\mbox  {V-F}}{3}{}{subsection.5.6}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {VI}Limitations}{3}{}\protected@file@percent }
+\newlabel{sec:limits}{{VI}{3}{}{section.6}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {VII}Conclusion}{3}{}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Explaining a flag that no pattern matches: label, risk-score terms and the words that pushed the classical model towards its label.}}{3}{}\protected@file@percent }
+\newlabel{fig:explain}{{2}{3}{}{figure.2}{}}
+\@writefile{toc}{\contentsline {section}{References}{3}{}\protected@file@percent }
+\bibcite{shi2025toolselection}{21}
+\bibcite{mu2025resume}{22}
+\bibcite{willison2025trifecta}{23}
+\bibcite{neuralchemy2025}{24}
+\bibcite{protectai2024deberta}{25}
+\gdef \@abspage@last{6}

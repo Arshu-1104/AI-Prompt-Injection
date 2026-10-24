@@ -1,0 +1,109 @@
+% Response to Reviewers: last page of the resubmission (required by ICCD).
+% Numbers use the same \pgnum / \pgr keys as the paper, so they come from the same artifacts.
+\onecolumn
+\section*{Response to Reviewers}
+\small
+We thank all reviewers. The paper was reviewed at three venues (ICDDS 2026 \#1316, INDICON 2026 \#4970,
+IEEE ICCD-2026 \#82); many comments overlap, so we answer them by theme and then list the remaining
+points per review. Section, table and figure numbers refer to the revised paper.
+
+\subsection*{A. Main concerns shared by several reviewers}
+\begin{enumerate}
+\item \textbf{The BERT and guard tiers were not evaluated} (ICDDS R4, R5; INDICON R1, R2.1; ICCD 3.1).
+\emph{Done.} DistilBERT and ModernBERT are trained over \pgnum{pr.models.bert.summary.n_seeds_ok} and
+\pgnum{pr.models.guard.summary.n_seeds_ok} seeds and evaluated on the same official test split as the
+classical model, with bootstrap CIs and paired McNemar tests (Table~\ref{tab:indist}), on three external
+datasets (Section~\ref{sec:cross}), on pasted documents (Table~\ref{tab:docs}) and under perturbations
+(Table~\ref{tab:robust}). All sentences about hosting limits and storage quotas are removed.
+
+\item \textbf{The 35-prompt test bed was too small} (ICDDS R4; INDICON R1, R2.2; ICCD 3.2).
+\emph{Done.} The hand-written 35-prompt table is retired. We report the official test split
+(\pgnum{cur.sets.\testset.classical.n} original rows) and three public external sets with AUROC, FPR,
+FPR at fixed TPR, confusion matrices and 95\% CIs; small groups get Wilson intervals and raw counts.
+
+\item \textbf{No baselines; compare with Llama Prompt Guard 2} (ICDDS R4; INDICON R2.6; ICCD 3.2, Q3).
+\emph{Done.} We add Llama Prompt Guard 2-86M and ProtectAI's DeBERTa-v3 detector, both used as published,
+and regex-only and keyword baselines, on every evaluation set. Q3 asked for the comparison on the
+35-prompt benchmark; since that benchmark is retired, the comparison is made on the public sets instead.
+We note that neither public detector fully discloses its training data, so overlap with the external sets
+cannot be excluded.
+
+\item \textbf{Training data, splits and model selection were not documented; leakage could not be ruled out}
+(ICDDS R4; INDICON R2.3; ICCD Q1). \emph{Done} (Section~\ref{sec:data}): dataset and pinned revision,
+split sizes before and after derivation, how SUSPICIOUS is derived, cross-split de-duplication, the
+candidate set and the validation score of the selected model, and the transformer hyperparameters. The
+earlier text wrongly said the classical model was an ensemble chosen by cross-validation; it is one model
+chosen on the validation split, and the text now says so. Code, data revision and the commit used for
+the paper are released.
+
+\item \textbf{Risk score, Review band and escalation threshold were not defined} (INDICON R2.3, R2.4; ICCD minor).
+\emph{Done.} The risk-score formula is given exactly as the API computes it (Section~\ref{sec:data}), and the
+API now returns its three terms, so every score is decomposable. The 0.65 escalation threshold is
+evaluated in a sweep with the threshold chosen on the validation split only (Section~\ref{sec:pipeline}).
+It does not help: the deployed rule escalates almost no rows, and a broader rule that helps on validation
+lowers test accuracy. We therefore dropped ``multi-tier'' from the title.
+
+\item \textbf{Inconsistent labels} (ICDDS R4; INDICON R2.4, Figures). \emph{Done.} The paper uses SAFE /
+SUSPICIOUS / MALICIOUS throughout, maps them once to the UI names (Safe / Review / Danger), and reports
+binary SAFE-vs-not-SAFE as the headline because SUSPICIOUS is synthetic.
+
+\item \textbf{``Real-time'' and ``lightweight'' were not measured; how does debouncing interact with the rate
+limit?} (ICDDS R4; INDICON R2.7; ICCD 3.5, Q2). \emph{Done.} Table~\ref{tab:indist} gives CPU latency per
+model, and Section~\ref{sec:pipeline} gives end-to-end extension latency (last keystroke to badge) and the
+request rate of scripted typing against the per-key limit. \todo{one sentence with the numbers}
+
+\item \textbf{Threat model unclear; jailbreaks vs injection; pasted documents not tested} (ICDDS R4;
+INDICON R2.8). \emph{Done.} A threat-model subsection separates jailbreaks (the user attacks; no protection
+claim) from indirect injection in pasted third-party content (the user is the victim; our target), and
+Table~\ref{tab:docs} tests that case with BIPIA documents. The result is negative and reported as such:
+the models trained on one public dataset flag nearly every clean document.
+
+\item \textbf{The 30\% false-positive rate makes the tool unusable} (ICDDS R4; INDICON R2.4; ICCD 3.3).
+\emph{Addressed.} The 30\% figure came from 10 hand-written benign prompts. On the official test split the
+FPR of the classical model is \pgr{3}{pr.models.classical.bootstrap.binary.false_positive_rate.point}; on
+other datasets and on pasted documents it is much higher (Section~\ref{sec:cross}, Table~\ref{tab:docs}).
+We now state plainly that the detectors do not generalize well enough to block prompts, and we give FPR at
+fixed TPR so readers can judge operating points.
+
+\item \textbf{Adaptive attacks and over-flagging} (INDICON R2.5, R2.9). \emph{Done.} Table~\ref{tab:robust}
+applies eight perturbations to attack \emph{and} benign rows. It confirms the reviewer's suspicion: the
+perfect scores on encoded or translated attacks came from flagging anything unusual, which the benign
+column now shows.
+
+\item \textbf{Privacy of the tool} (ICDDS R4; INDICON R2.9). \emph{Done.} Section~\ref{sec:system} states what is
+sent, what is stored (a hash, not the text, by default), the permissions requested, and the self-hosting option.
+
+\item \textbf{Prompts flagged with ``no patterns listed''} (INDICON R2.5, Figures; ICCD minor). \emph{Done.} When
+no pattern matches, the API returns the words that contributed most to the label, computed exactly from the
+classical model's weights; Fig.~\ref{fig:explain} shows an example with the risk-score terms.
+
+\item \textbf{Novelty; name clash with Meta's Prompt Guard} (INDICON R2.10; ICCD originality). \emph{Done.}
+Section~\ref{sec:related} states that PromptGuard is not a new detector architecture: the contributions are
+the browser-side deployment and the evaluation of in-distribution versus cross-dataset generalization. It
+also states that the name is unrelated to Meta's Prompt Guard.
+\end{enumerate}
+
+\subsection*{B. Remaining points}
+\begin{itemize}
+\item \textbf{Typos and broken text} (all venues: ``74.3a'', ``uni-tested'', ``across across'', ``OW ASP'',
+``ENABLE HEAVY MODELS''): removed with the rewrite; the paper no longer contains implementation names.
+\item \textbf{Revision artefacts and implementation detail in the text} (INDICON R2; ICCD 3.4): removed (``now
+implements'', ``has since migrated'', SQLAlchemy, Alembic, JWT, environment variables, storage quotas).
+\item \textbf{References} (ICDDS R4; INDICON R2; ICCD): every entry was checked against arXiv or the publisher.
+[9] now lists its authors as on arXiv (first author V.~Benjamin, last author T.~Heverin; the earlier
+``R.~Shen, M.~J.~Smith'' was wrong). We also corrected the author lists of Liu et al.\ (prompt injection and
+jailbreaking papers) and Zhang et al.\ (now cited at ICDM 2024), the year of PromptShield (CODASPY 2025),
+added arXiv IDs to Attention Tracker, InjecGuard and the resume-screening study, cite Prompt Guard 2 by its
+model card, mark the remaining blog post as such, and removed the other.
+\item \textbf{Section order and numbering} (not raised, found by us): the misplaced subsection, the Future
+Work / Limitations order and a sentence without a main verb are fixed.
+\item \textbf{Fig.~1 inconsistent with the text and without the escalation path; Fig.~2 illegible} (INDICON R2,
+ICCD minor): Fig.~1 is redrawn with the same labels as the text and shows escalation; Fig.~2 is replaced by
+a large annotated screenshot.
+\item \textbf{Tables and figures looked AI-generated} (INDICON R1): tables are now LaTeX \texttt{booktabs}
+generated from the experiment outputs, and the diagram is drawn by hand.
+\item \textbf{Percentages for tiny categories} (ICCD minor): no table reports a percentage for fewer than
+five samples; perturbation and document groups have \pgnum{rob.config.per_class} or more rows each.
+\item \textbf{``Fully decomposable'' vs unexplained scores} (ICCD minor): reconciled; the score is decomposed
+into its three terms for every prediction, and unexplained flags now come with contributing words.
+\end{itemize}

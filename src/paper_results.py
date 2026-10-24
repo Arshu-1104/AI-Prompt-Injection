@@ -660,7 +660,7 @@ def main(argv: list[str] | None = None) -> dict:
         model_results[model_type]["bootstrap"] = stats.bootstrap_ci(ev, idx3, idxb)
     names = list(reference)
     pairwise = [
-        {"a": a, "b": b, **stats.paired_comparison(reference[a], reference[b], idx3, idxb)}
+        {"name": f"{a}_vs_{b}", "a": a, "b": b, **stats.paired_comparison(reference[a], reference[b], idx3, idxb)}
         for i, a in enumerate(names)
         for b in names[i + 1 :]
     ]

@@ -13,19 +13,36 @@
 % from the artifacts in artifacts/. Keys are <artifact short name>.<JSON path>.
 \makeatletter
 \newcommand{\pgdef}[2]{\expandafter\def\csname pg@#1\endcsname{#2}}
-\newcommand{\pgnum}[1]{\ifcsname pg@#1\endcsname\csname pg@#1\endcsname\else
-  \textbf{\textcolor{red}{??}}\PackageWarning{pgnum}{missing number #1}\fi}
+\newcommand{\pgval}[1]{\csname pg@#1\endcsname}
+% A key the paper uses but numbers.tex lacks prints a red ?? and a warning (never a guessed value).
+\newcommand{\pgmissing}[1]{\textbf{\textcolor{red}{??}}\PackageWarning{pgnum}{missing number #1}}
+\newcommand{\pgifdef}[3]{\ifcsname pg@#1\endcsname#2\else#3\fi}
 \makeatother
-% \pgr{digits}{key}: rounded value; \pgp{digits}{key}: value x 100 (percent, no % sign)
-\newcommand{\pgr}[2]{\num[round-mode=places,round-precision=#1]{\fpeval{\pgnum{#2}}}}
-\newcommand{\pgp}[2]{\num[round-mode=places,round-precision=#1]{\fpeval{100*\pgnum{#2}}}}
-\newcommand{\pgsci}[1]{\num{\pgnum{#1}}}% e.g. 5e-05 -> 5 x 10^-5
+% \pgnum{key}: as written; \pgr{digits}{key}: rounded; \pgp{digits}{key}: x 100 (percent, no % sign);
+% \pgsci{key}: scientific notation (e.g. 5e-05 -> 5 x 10^-5)
+\newcommand{\pgnum}[1]{\pgifdef{#1}{\pgval{#1}}{\pgmissing{#1}}}
+\newcommand{\pgr}[2]{\pgifdef{#2}{\num[round-mode=places,round-precision=#1]{\fpeval{\pgval{#2}}}}{\pgmissing{#2}}}
+\newcommand{\pgp}[2]{\pgifdef{#2}{\num[round-mode=places,round-precision=#1]{\fpeval{100*\pgval{#2}}}}{\pgmissing{#2}}}
+\newcommand{\pgsci}[1]{\pgifdef{#1}{\num{\pgval{#1}}}{\pgmissing{#1}}}
 \newcommand{\todo}[1]{\textbf{\textcolor{red}{[TODO: #1]}}}
+% table helpers (all values still come from numbers.tex)
+\newcommand{\cipr}[2]{\pgr{#1}{#2.point}\,[\pgr{#1}{#2.ci95.0},\,\pgr{#1}{#2.ci95.1}]}% point [95% CI]
+\newcommand{\testset}{neuralchemy_test__original_rows}
+\newcommand{\docfpr}[1]{\pgr{2}{docs.models.#1.false_positive_rate.rate}}
+\newcommand{\docdet}[3]{\pgr{2}{docs.models.#1.detection.#2.#3.rate}}
+\newcommand{\robc}[2]{\pgr{2}{rob.models.#1.#2.attack_detected.rate}/\pgr{2}{rob.models.#1.#2.benign_flagged.rate}}
+\newcommand{\dsx}{xTRam1/safe-guard-prompt-injection}
+\newcommand{\dsd}{deepset/prompt-injections}
+\newcommand{\dsq}{qualifire/prompt-injections-benchmark}
+\newcommand{\extv}[3]{\pgr{2}{ext.datasets.#1.models.#2.#3}}% dataset, model, metric
+\newcommand{\extrow}[2]{\extv{#1}{#2}{accuracy} & \extv{#1}{#2}{false_positive_rate} & \extv{#1}{#2}{auroc.auroc}}
+\newcommand{\extline}[2]{#1 & \extrow{\dsx}{#2} & \extrow{\dsd}{#2} & \extrow{\dsq}{#2} \\}
 \input{numbers}
 
 \begin{document}
 
-\title{\todo{final title after results}}
+\title{PromptGuard: A Browser-Side Prompt Injection Detector and an Evaluation of In-Distribution versus
+Cross-Dataset Generalization}
 
 \author{\IEEEauthorblockN{Arshitha S, Charithra H S, Chandrakala Hipparagi}
 \IEEEauthorblockA{\todo{affiliation}}}
@@ -33,7 +50,20 @@
 \maketitle
 
 \begin{abstract}
-\todo{write after results are final}
+Prompt injection lets text that a user pastes into a chat assistant, such as an email, a web page or a table,
+redirect the model. We present PromptGuard, an open-source browser extension with a self-hostable API that
+checks the prompt box of hosted chat services before the text is sent, reports a decomposable risk score
+and shows the words behind a flag. We train three detectors on one public dataset (TF-IDF with logistic
+regression, DistilBERT and ModernBERT) and compare them with Llama Prompt Guard 2, a ProtectAI detector and
+two rule baselines. In distribution the three trained models are statistically tied (binary accuracy
+\pgr{3}{pr.models.classical.bootstrap.binary.accuracy.point} for the linear model, McNemar
+$p\geq\pgr{2}{pr.pairwise.classical_vs_guard.binary.mcnemar.p_value}$), and the linear model needs
+\pgr{1}{pr.models.classical.latency.batch_1.median_ms_per_prompt}~ms per prompt on a CPU. On three other public
+datasets their accuracy falls to \extv{\dsx}{guard}{accuracy}--\extv{\dsd}{guard}{accuracy} with
+false-positive rates up to \extv{\dsx}{guard}{false_positive_rate}; they flag nearly every clean document
+from the BIPIA benchmark, and they flag perturbed benign text as attacks. The published detectors transfer
+better across datasets but miss almost every task injection hidden in a document. Test scores on a single
+public dataset therefore overstate how useful such detectors are in front of real user text.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -41,10 +71,67 @@ prompt injection, large language models, LLM security, browser extension, text c
 \end{IEEEkeywords}
 
 \section{Introduction}
-\todo{write after results are final}
+Prompt injection is the first risk in the OWASP list for LLM applications \cite{owasp2025llm01}. In its
+indirect form, the attacking text sits in content that reaches the model on the user's behalf, such as a
+web page, an email or a document \cite{greshake2023not}. With chat assistants, the most common way such
+content reaches the model is still the simplest one: the user copies it into the prompt box.
+
+PromptGuard is a browser extension that checks the prompt box of hosted chat services before the text is
+sent, backed by a small open-source API that anyone can host. This paper describes the system and asks a
+question any such tool depends on: is a detector trained on a public prompt-injection dataset good enough
+to run in front of real user text? We train three detectors on one public dataset, a TF-IDF logistic
+regression, DistilBERT and ModernBERT, and compare them with two published detectors and two rule
+baselines in distribution, on three other public datasets, on documents with embedded injections and
+under perturbations.
+
+In distribution the three trained models are statistically tied, with accuracy around
+\pgr{2}{pr.models.classical.bootstrap.binary.accuracy.point}, and the linear model is by far the cheapest.
+Everywhere else they fail: accuracy falls to near chance on two of the three external datasets, nearly every
+clean pasted document is flagged, and perturbations of benign text are flagged as attacks. The published
+detectors generalize better across datasets but miss most injections hidden in documents. On benign text
+from other datasets, the classical model mostly leaves questions alone and flags much of everything else
+(Section~\ref{sec:cross}).
+
+Our contributions are:
+\begin{itemize}
+\item an open-source, browser-side detection system with a self-hostable API that reports a decomposable
+risk score and, when no pattern applies, the words behind a flag (Sections~\ref{sec:system}--\ref{sec:data});
+\item an evaluation that separates in-distribution accuracy from cross-dataset accuracy, the pasted-document
+case and perturbation robustness, with published baselines and confidence intervals (Section~\ref{sec:eval});
+\item a negative result with a diagnosis: single-dataset test scores substantially overstate how well such
+detectors work in the setting they are meant for.
+\end{itemize}
+Code, pinned data revisions and the scripts that produce every number in this paper are available at
+\url{https://github.com/Arshu-1104/AI-Prompt-Injection} (commit \texttt{\pgnum{git.commit}}).
 
 \section{Related Work}\label{sec:related}
-\todo{shortened version of the submitted section}
+\emph{Attacks.} Perez and Ribeiro showed goal hijacking and prompt leaking with hand-written prompts
+\cite{perez2022ignore}, and Greshake et al.\ moved the payload into third-party content that an
+application retrieves, the indirect setting we target \cite{greshake2023not}. Later work studied
+injection against deployed applications \cite{liu2023promptinjection}, separated out jailbreaks
+\cite{liu2023jailbreaking}, hid instructions inside larger benign tasks \cite{jiang2023packer}, and
+searched for injections automatically \cite{zhang2024goal,pasquini2024neural}. Susceptibility differs
+across model families \cite{benjamin2024systematically}. Liu et al.\ formalized attacks and defenses in one
+benchmark \cite{liu2024formalizing}, and BIPIA collects indirect injections in emails, tables and other
+documents \cite{yi2025bipia}; we use its documents and attack sentences in Section~\ref{sec:eval}.
+
+\emph{Detectors.} Llama Guard classifies prompts and responses against a safety taxonomy
+\cite{inan2023llamaguard}; Prompt Guard 2 is a small mDeBERTa classifier for injection and jailbreak
+intent \cite{meta2025promptguard2}; PromptShield evaluates detectors under deployment conditions
+\cite{jacob2025promptshield}; and Attention Tracker detects injection from the attention of the target
+model itself \cite{hung2024attention}. InjecGuard measures over-defense, i.e.\ benign prompts flagged for
+looking like attacks \cite{li2024injecguard}, and fine-tuned detectors can be broken by adaptive attacks
+\cite{pandya2025attention}. Baseline defenses such as perplexity filtering trade detection for
+benign-task performance \cite{jain2023baseline}. PromptLocate localizes the injected span instead of
+classifying the whole input \cite{jia2026promptlocate}. Defending a production model needs several layers
+once retrieval and tools are involved \cite{shi2025gemini}, and injection reaches LLM judges and tool
+selection \cite{shi2024judge,shi2025toolselection} as well as specialised applications such as resume
+screening \cite{mu2025resume}.
+
+\emph{This work.} PromptGuard is not a new detector architecture. It places a detector in the user's
+browser, in front of any hosted chat service, and asks how far detectors trained on one public dataset
+carry to others. The name is unrelated to Meta's Prompt Guard models \cite{meta2025promptguard2}, which
+we use as a baseline.
 
 \section{System and Threat Model}\label{sec:system}
 
@@ -140,15 +227,270 @@ model is loaded, a classical SUSPICIOUS verdict with confidence below 0.65 is re
 model's verdict. We evaluate both rules in Section~\ref{sec:eval}.
 
 \section{Evaluation}\label{sec:eval}
-\todo{results}
+
+\subsection{Setup}
+All models are scored as published or as trained, without tuning on any evaluation set. Inputs pass
+through the same normalization as the API. We report binary accuracy, false-positive rate (FPR) and
+threshold-free AUROC, with 95\% confidence intervals from 1000 bootstrap resamples of the evaluation set;
+for small groups we give Wilson intervals instead. Paired comparisons on the same rows use an exact
+McNemar test. Baselines are ProtectAI's DeBERTa-v3 detector \cite{protectai2024deberta} and Llama Prompt
+Guard 2 \cite{meta2025promptguard2}, used as published (their benign and attack labels map to SAFE and
+MALICIOUS), plus two rule baselines: our regular expressions alone (any match is an attack) and a fixed
+keyword list. Latency is CPU time per prompt at batch size 1 on an \pgnum{pr.environment.latency_machine.cpu_model}.
+
+\subsection{In distribution}
+On the original test rows (Table~\ref{tab:indist}) the three trained models are statistically tied: the
+classical model and DistilBERT differ by
+\pgr{4}{pr.pairwise.classical_vs_bert.binary.difference} in accuracy (McNemar
+$p=\pgr{2}{pr.pairwise.classical_vs_bert.binary.mcnemar.p_value}$), and the classical model and ModernBERT
+by \pgr{4}{pr.pairwise.classical_vs_guard.binary.difference}
+($p=\pgr{2}{pr.pairwise.classical_vs_guard.binary.mcnemar.p_value}$). The classical model needs a fraction
+of the CPU time. ProtectAI's detector is less accurate here (McNemar
+$p=\pgsci{pr.pairwise.classical_vs_protectai.binary.mcnemar.p_value}$ against the classical model), mainly
+because it misses attacks: its true-positive rate is
+\pgr{3}{cur.sets.\testset.protectai.fixed_operating_point.tpr} against
+\pgr{3}{cur.sets.\testset.classical.fixed_operating_point.tpr} for the classical model. The regular
+expressions match only a few attacks; most attacks in this dataset are obfuscated or reworded.
+
+\begin{table}[t]
+\centering
+\caption{In-distribution results on the \pgnum{cur.sets.\testset.classical.n} original test rows
+(\pgnum{cur.sets.\testset.classical.n_attack} attacks, \pgnum{cur.sets.\testset.classical.n_safe} benign).
+Accuracy and FPR at the API's operating point with bootstrap 95\% CIs; AUROC and FPR at a TPR of 0.95
+are threshold-free; ms = median CPU time per prompt.}
+\label{tab:indist}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}lccccr@{}}
+\toprule
+Detector & Accuracy & FPR & AUROC & FPR@.95 & ms \\
+\midrule
+Classical & \cipr{3}{pr.models.classical.bootstrap.binary.accuracy} & \pgr{3}{pr.models.classical.bootstrap.binary.false_positive_rate.point} & \pgr{3}{cur.sets.\testset.classical.auroc} & \pgr{3}{cur.sets.\testset.classical.fpr_at_tpr95} & \pgr{1}{pr.models.classical.latency.batch_1.median_ms_per_prompt} \\
+DistilBERT & \cipr{3}{pr.models.bert.bootstrap.binary.accuracy} & \pgr{3}{pr.models.bert.bootstrap.binary.false_positive_rate.point} & \pgr{3}{cur.sets.\testset.bert.auroc} & \pgr{3}{cur.sets.\testset.bert.fpr_at_tpr95} & \pgr{1}{pr.models.bert.latency.batch_1.median_ms_per_prompt} \\
+ModernBERT & \cipr{3}{pr.models.guard.bootstrap.binary.accuracy} & \pgr{3}{pr.models.guard.bootstrap.binary.false_positive_rate.point} & \pgr{3}{cur.sets.\testset.guard.auroc} & \pgr{3}{cur.sets.\testset.guard.fpr_at_tpr95} & \pgr{1}{pr.models.guard.latency.batch_1.median_ms_per_prompt} \\
+\midrule
+ProtectAI & \cipr{3}{pr.models.protectai.bootstrap.binary.accuracy} & \pgr{3}{pr.models.protectai.bootstrap.binary.false_positive_rate.point} & \pgr{3}{cur.sets.\testset.protectai.auroc} & \pgr{3}{cur.sets.\testset.protectai.fpr_at_tpr95} & \pgr{1}{pr.models.protectai.latency.batch_1.median_ms_per_prompt} \\
+Prompt Guard 2 & \cipr{3}{pr.models.llama_pg2.bootstrap.binary.accuracy} & \pgr{3}{pr.models.llama_pg2.bootstrap.binary.false_positive_rate.point} & \pgr{3}{cur.sets.\testset.llama_pg2.auroc} & \pgr{3}{cur.sets.\testset.llama_pg2.fpr_at_tpr95} & \pgr{1}{pr.models.llama_pg2.latency.batch_1.median_ms_per_prompt} \\
+Regex only & \cipr{3}{pr.models.regex.bootstrap.binary.accuracy} & \pgr{3}{pr.models.regex.bootstrap.binary.false_positive_rate.point} & -- & -- & -- \\
+Keyword list & \cipr{3}{pr.models.keyword.bootstrap.binary.accuracy} & \pgr{3}{pr.models.keyword.bootstrap.binary.false_positive_rate.point} & -- & -- & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Across datasets}\label{sec:cross}
+Table~\ref{tab:cross} applies the same models, without retraining, to three public test sets:
+xTRam1 \cite{xtram1safeguard}, deepset \cite{deepsetpromptinjections} (English and German) and Qualifire
+\cite{qualifirebenchmark}. Texts that also occur in our training data were removed first; none did.
+
+All three trained models fall to near chance. On xTRam1 their accuracy is between
+\extv{\dsx}{guard}{accuracy} and \extv{\dsx}{bert}{accuracy}, and they flag between
+\extv{\dsx}{bert}{false_positive_rate} and \extv{\dsx}{guard}{false_positive_rate} of the benign prompts; on
+Qualifire they reach at most \extv{\dsq}{bert}{accuracy}. Their AUROC lies between
+\extv{\dsx}{bert}{auroc.auroc} and \extv{\dsd}{bert}{auroc.auroc}, so no threshold separates the classes well.
+A threshold chosen on our validation split does not close the gap either: for the classical model on
+Qualifire it moves accuracy from \extv{\dsq}{classical}{accuracy} to
+\extv{\dsq}{classical}{validation_tuned.accuracy}. The in-distribution tie between the classical model and
+the transformers (Table~\ref{tab:indist}) therefore says nothing about which one generalizes; none of them does.
+
+ProtectAI's detector does much better on xTRam1 (accuracy \extv{\dsx}{protectai}{accuracy}) and Qualifire
+(\extv{\dsq}{protectai}{accuracy}). Its training data is only partly disclosed, so part of this gap may be
+overlap with these sets. The simple rule baselines are also informative: on xTRam1 and Qualifire the keyword list is more accurate
+(\extv{\dsx}{keyword}{accuracy} and \extv{\dsq}{keyword}{accuracy}) than any model we trained. It is not a
+good detector, since it finds few attacks (its AUROC is at most \extv{\dsx}{keyword}{auroc.auroc}); it
+simply almost never flags a benign prompt, which is where the trained models lose most.
+
+What do the false positives have in common? With a simple, documented heuristic for sentence form, the
+benign external prompts that the classical model flags are rarely questions: on xTRam1,
+\pgr{2}{diag.external_true_safe.\dsx.false_positives.question.share} of them are questions against
+\pgr{2}{diag.external_true_safe.\dsx.true_negatives.question.share} of the benign prompts it leaves alone,
+and on Qualifire \pgr{2}{diag.external_true_safe.\dsq.false_positives.question.share} against
+\pgr{2}{diag.external_true_safe.\dsq.true_negatives.question.share}. In the training data, questions are more
+common among benign rows than among attacks (\pgr{2}{diag.training.SAFE.question.share} against
+\pgr{2}{diag.training.MALICIOUS.question.share}), while imperatives are common in both
+(\pgr{2}{diag.training.SAFE.imperative.share} and \pgr{2}{diag.training.MALICIOUS.imperative.share}). The
+model therefore behaves as if a question were evidence of safety, and benign text in other forms, such as
+the task instructions that fill xTRam1, is flagged.
+
+\begin{table*}[t]
+\centering
+\caption{Cross-dataset results without retraining (binary; accuracy and FPR at the API's operating point,
+threshold-free AUROC). Bootstrap CIs and per-language results for deepset are in the artifact.}
+\label{tab:cross}
+\footnotesize
+\begin{tabular}{@{}lccccccccc@{}}
+\toprule
+& \multicolumn{3}{c}{xTRam1 ($n=\pgnum{ext.datasets.\dsx.evaluated_rows}$)}
+& \multicolumn{3}{c}{deepset ($n=\pgnum{ext.datasets.\dsd.evaluated_rows}$)}
+& \multicolumn{3}{c}{Qualifire ($n=\pgnum{ext.datasets.\dsq.evaluated_rows}$)} \\
+\cmidrule(lr){2-4}\cmidrule(lr){5-7}\cmidrule(lr){8-10}
+Detector & Acc. & FPR & AUROC & Acc. & FPR & AUROC & Acc. & FPR & AUROC \\
+\midrule
+\extline{Classical}{classical}
+\extline{DistilBERT}{bert}
+\extline{ModernBERT}{guard}
+\midrule
+\extline{ProtectAI}{protectai}
+\extline{Prompt Guard 2}{llama_pg2}
+\extline{Regex only}{regex}
+\extline{Keyword list}{keyword}
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{../artifacts/figures/roc_pr.pdf}
+\caption{ROC and precision-recall curves in distribution (top) and on Qualifire (bottom).}
+\label{fig:curves}
+\end{figure}
+
+\subsection{Injections in pasted documents}
+Table~\ref{tab:docs} uses the threat model's case: \pgnum{docs.counts.documents.email} emails and
+\pgnum{docs.counts.documents.table} tables from BIPIA \cite{yi2025bipia}, framed with BIPIA's question as a
+user would paste them, once clean and once with a BIPIA attack sentence at the start, middle or end. Most
+BIPIA attacks ask for an unrelated task (``Recommend a good book'') rather than overriding instructions;
+a second variant adds ``Ignore all previous instructions.'' in front of the same sentence.
+
+The three models we trained flag nearly every clean document: the FPR is \docfpr{classical} for the
+classical model and \docfpr{bert} and \docfpr{guard} for the transformers, so their detection rates carry
+no information. A document on its own is enough; a table of numbers is flagged with its numbers as the
+top words. ProtectAI and the rule baselines rarely flag clean documents but catch almost none of the plain
+BIPIA attacks; they catch the override variant, the rules completely and ProtectAI about half the time.
+Where the attack lies beyond ProtectAI's 512-token input, it was never detected
+(\pgnum{docs.models.protectai.detection.bipia.attack_beyond_truncation.n} cases). In short, none of the
+detectors handles the case PromptGuard is meant for: either everything is flagged or only the explicit
+override phrase is.
+
+\begin{table}[t]
+\centering
+\caption{Pasted documents with embedded injections (BIPIA). FPR on the \pgnum{docs.counts.clean} clean
+documents and detection rate for the attack sentence as published (by position) and with an override
+prefix. Wilson 95\% CIs are in the artifact.}
+\label{tab:docs}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+& FPR & \multicolumn{3}{c}{BIPIA attack at} & with \\
+\cmidrule(lr){3-5}
+Detector & clean & start & middle & end & override \\
+\midrule
+Classical & \docfpr{classical} & \docdet{classical}{bipia}{start} & \docdet{classical}{bipia}{middle} & \docdet{classical}{bipia}{end} & \docdet{classical}{bipia+override}{all} \\
+DistilBERT & \docfpr{bert} & \docdet{bert}{bipia}{start} & \docdet{bert}{bipia}{middle} & \docdet{bert}{bipia}{end} & \docdet{bert}{bipia+override}{all} \\
+ModernBERT & \docfpr{guard} & \docdet{guard}{bipia}{start} & \docdet{guard}{bipia}{middle} & \docdet{guard}{bipia}{end} & \docdet{guard}{bipia+override}{all} \\
+ProtectAI & \docfpr{protectai} & \docdet{protectai}{bipia}{start} & \docdet{protectai}{bipia}{middle} & \docdet{protectai}{bipia}{end} & \docdet{protectai}{bipia+override}{all} \\
+Prompt Guard 2 & \docfpr{llama_pg2} & \docdet{llama_pg2}{bipia}{start} & \docdet{llama_pg2}{bipia}{middle} & \docdet{llama_pg2}{bipia}{end} & \docdet{llama_pg2}{bipia+override}{all} \\
+Regex only & \docfpr{regex} & \docdet{regex}{bipia}{start} & \docdet{regex}{bipia}{middle} & \docdet{regex}{bipia}{end} & \docdet{regex}{bipia+override}{all} \\
+Keyword list & \docfpr{keyword} & \docdet{keyword}{bipia}{start} & \docdet{keyword}{bipia}{middle} & \docdet{keyword}{bipia}{end} & \docdet{keyword}{bipia+override}{all} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Perturbations}
+Table~\ref{tab:robust} applies eight perturbations to \pgnum{rob.config.per_class} attack and
+\pgnum{rob.config.per_class} benign test rows and shows both classes. Attack detection stays near 1 for
+every trained model, but the benign column shows why: leetspeak, homoglyphs and German translation make
+the trained models flag benign text too, up to all of it. The perturbation itself has become the signal.
+ProtectAI flags few perturbed benign rows, with three exceptions: zero-width characters
+(\pgr{2}{rob.models.protectai.zero_width.benign_flagged.rate}), spaced letters
+(\pgr{2}{rob.models.protectai.spaced.benign_flagged.rate}) and the Base64 framing
+(\pgr{2}{rob.models.protectai.base64.benign_flagged.rate}). Under paraphrasing its detection falls from
+\pgr{2}{rob.models.protectai.original.attack_detected.rate} to
+\pgr{2}{rob.models.protectai.paraphrase.attack_detected.rate}; we did not verify that every paraphrase
+still carries its attack. Base64 is decoded by the API's normalization before any model sees it.
+
+\begin{table}[t]
+\centering
+\caption{Perturbation robustness: share of attacks detected / share of benign rows flagged
+(\pgnum{rob.config.per_class} each). Wilson 95\% CIs are in the artifact.}
+\label{tab:robust}
+\footnotesize
+\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+Perturbation & Classical & DistilBERT & ModernBERT & ProtectAI & PG2 \\
+\midrule
+none & \robc{classical}{original} & \robc{bert}{original} & \robc{guard}{original} & \robc{protectai}{original} & \robc{llama_pg2}{original} \\
+homoglyph & \robc{classical}{homoglyph} & \robc{bert}{homoglyph} & \robc{guard}{homoglyph} & \robc{protectai}{homoglyph} & \robc{llama_pg2}{homoglyph} \\
+zero-width & \robc{classical}{zero_width} & \robc{bert}{zero_width} & \robc{guard}{zero_width} & \robc{protectai}{zero_width} & \robc{llama_pg2}{zero_width} \\
+leetspeak & \robc{classical}{leetspeak} & \robc{bert}{leetspeak} & \robc{guard}{leetspeak} & \robc{protectai}{leetspeak} & \robc{llama_pg2}{leetspeak} \\
+spaced & \robc{classical}{spaced} & \robc{bert}{spaced} & \robc{guard}{spaced} & \robc{protectai}{spaced} & \robc{llama_pg2}{spaced} \\
+Base64 & \robc{classical}{base64} & \robc{bert}{base64} & \robc{guard}{base64} & \robc{protectai}{base64} & \robc{llama_pg2}{base64} \\
+German & \robc{classical}{translated_de} & \robc{bert}{translated_de} & \robc{guard}{translated_de} & \robc{protectai}{translated_de} & \robc{llama_pg2}{translated_de} \\
+paraphrase & \robc{classical}{paraphrase} & \robc{bert}{paraphrase} & \robc{guard}{paraphrase} & \robc{protectai}{paraphrase} & \robc{llama_pg2}{paraphrase} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Decision pipeline and latency}\label{sec:pipeline}
+\emph{Rule floor.} The chat-template and hidden-content rule fires on a handful of rows
+(\pgnum{pipe.rule_floor.neuralchemy_test__original_rows.flagged} of the test rows) and changes no label on any
+evaluation set, because the classical model already flags those rows.
+
+\emph{Escalation.} The deployed rule, which sends classical SUSPICIOUS verdicts with confidence below 0.65 to
+ModernBERT, escalates no test row and at most
+\pgp{1}{pipe.sets.\dsq.suspicious_only.0.65.escalated_share}\% of an external set, so it changes almost
+nothing. We also tried escalating every verdict whose confidence is below a threshold $t$. On the
+validation split the best $t$ is \pgnum{pipe.selected_thresholds.any_label}, which raises validation accuracy
+from \pgr{4}{pipe.sets.neuralchemy_validation__original_rows.classical_only.accuracy} to
+\pgr{4}{pipe.sets.neuralchemy_validation__original_rows.any_label.0.9.accuracy}; on the test split, however,
+accuracy falls to \pgr{4}{pipe.sets.\testset.any_label.0.9.accuracy}. On external data the classical model is
+unsure about almost everything, so this rule escalates
+\pgp{0}{pipe.sets.\dsx.any_label.0.9.escalated_share}--\pgp{0}{pipe.sets.\dsq.any_label.0.9.escalated_share}\%
+of the rows: it turns into ModernBERT, at close to ModernBERT's cost
+(\pgr{0}{pipe.latency.guard_only_mean_ms}~ms per prompt against \pgr{1}{pipe.latency.classical_only_mean_ms}~ms for
+the classical model alone, mean CPU time in this experiment). Escalation as designed does not help, so we do
+not present PromptGuard as a multi-tier detector.
+
+\emph{Latency.} \todo{model CPU latency from Table I and end-to-end extension latency from e2e\_latency.json}
+
+\begin{figure}[t]
+\centering
+\IfFileExists{fig2_explanation.png}{\includegraphics[width=\columnwidth]{fig2_explanation.png}}%
+{\fbox{\parbox{0.92\columnwidth}{\centering\small\todo{Fig.~2: run bench/e2e/fig2\_capture.mjs}}}}
+\caption{A flag that no pattern explains. The classical model labels ``\pgnum{fig2.prompt}''
+\pgnum{fig2.response.label} with risk score
+\pgr{1}{fig2.response.risk_score} $=$ \pgr{0}{fig2.response.risk_components.base} (label) $+$
+\pgr{1}{fig2.response.risk_components.pattern_boost} (patterns) $+$
+\pgr{1}{fig2.response.risk_components.confidence_term} (confidence); the highlighted words pushed it
+towards that label.}
+\label{fig:explain}
+\end{figure}
 
 \section{Limitations}\label{sec:limits}
-\todo{limitations}
+\emph{Data.} We train on one public dataset, and its SUSPICIOUS class is synthetic. Two of the external
+datasets do not document their label meaning; we checked it from samples and keyword rates. The public
+detectors do not fully disclose their training data, so they may have seen data close to the external
+sets, which would favour them.
+
+\emph{Tests.} The pasted-document test has \pgnum{docs.counts.clean} documents from two sources and frames
+each one in a single way; most of its attacks are task injections, and the override variant is our own.
+The perturbation test starts from short in-distribution rows, and we did not check by hand that every
+paraphrased attack is still an attack. Latency was measured on one laptop CPU.
+
+\emph{Explanations.} The regular expressions match few attacks
+(true-positive rate \pgr{3}{cur.sets.\testset.regex.fixed_operating_point.tpr} on the test split), so they
+explain only some flags. The word attributions are exact for each TF-IDF feature, but splitting n-gram
+contributions over words is an approximation, and neither they nor attention weights are causal
+explanations.
+
+\emph{Deployment.} A user can switch the extension off, so it gives no protection against a user who wants
+to jailbreak a model. The hosted API stores an unsalted hash of each prompt, which can reveal short or
+common prompts.
 
 \section{Conclusion}
-\todo{conclusion}
+PromptGuard puts a prompt-injection check in the one place every hosted chat service shares, the user's
+browser, and keeps its decisions inspectable. Measured on its own test split, a TF-IDF model is as good as
+two fine-tuned transformers at a fraction of the cost. Measured where the tool is meant to work, on other
+datasets and on pasted documents, none of the three is usable, and the published detectors trade
+over-flagging for missed injections. We see two directions: training data that covers benign documents and
+instructions as well as attacks, and judging an injection relative to the user's own request rather than in
+isolation. Until then, a browser-side detector is best treated as a warning, not a filter.
 
 \bibliographystyle{IEEEtran}
 \bibliography{refs}
+
+\clearpage
+\input{response}
 
 \end{document}

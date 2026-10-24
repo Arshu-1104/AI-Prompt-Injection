@@ -33,12 +33,15 @@ SOURCES = {  # short name -> file written by the code, relative to the repositor
     "diag": "artifacts/diagnosis.json",
     "e2e": "artifacts/e2e_latency.json",
     "xdiag": "artifacts/external_diagnostics.json",
+    "fig2": "artifacts/fig2_example.json",  # bench/e2e/fig2_capture.mjs: the API response shown in Fig. 2
     "meta": "data/dataset_meta.json",  # written by src.load_data: split sizes, derivation counts, build fractions
     "trn": "artifacts/metrics.json",  # src.train_classical: validation score of every classical candidate
     "bert42": "artifacts/paper_runs/bert/seed_42/metrics.json",  # training hyperparameters (reference seed)
     "guard42": "artifacts/paper_runs/guard/seed_42/metrics.json",
 }
 SKIP_KEYS = {"samples", "sample_texts", "imperative_verbs", "question_words", "points"}
+# Strings exported as-is must be short and contain nothing LaTeX treats specially.
+SAFE_STRING = re.compile(r"[A-Za-z0-9 ().,:@/+-]{1,80}")
 
 
 def sanitize(part: str) -> str:
@@ -56,6 +59,8 @@ def flatten(value, prefix: str, out: dict[str, float]) -> None:
         for key, item in value.items():
             if key not in SKIP_KEYS:
                 flatten(item, f"{prefix}.{sanitize(key)}", out)
+    elif isinstance(value, str) and SAFE_STRING.fullmatch(value):
+        out[prefix] = value  # short descriptive strings, e.g. the CPU model of the latency machine
     elif isinstance(value, list):
         named = all(isinstance(item, dict) and "name" in item for item in value) and value
         for i, item in enumerate(value):
@@ -63,12 +68,22 @@ def flatten(value, prefix: str, out: dict[str, float]) -> None:
 
 
 def fmt(value) -> str:
+    if isinstance(value, str):
+        return value
     return str(value) if isinstance(value, int) else f"{value:.10g}"
 
 
 def collect() -> tuple[dict[str, tuple[float, str]], list[str]]:
     numbers: dict[str, tuple[float, str]] = {}
     missing = []
+    try:  # the code version the numbers were generated with, cited in the paper
+        import subprocess
+
+        commit = subprocess.run(["git", "rev-parse", "--short=7", "HEAD"], cwd=ROOT, capture_output=True,
+                                text=True, check=True).stdout.strip()
+        numbers["git.commit"] = (commit, "git rev-parse --short=7 HEAD")
+    except Exception:
+        missing.append("git commit")
     for short, relative in SOURCES.items():
         path = ROOT / relative
         if not path.exists():

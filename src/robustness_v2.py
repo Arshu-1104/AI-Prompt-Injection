@@ -186,6 +186,8 @@ def main(argv: list[str] | None = None) -> dict:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--protectai", action="store_true")
     parser.add_argument("--baselines", nargs="*", default=[], choices=["regex", "keyword", "llama_pg2"])
+    parser.add_argument("--add-only", action="store_true",
+                        help="Evaluate only --protectai / --baselines and merge them into the existing artifacts/robustness_v2.json.")
     args = parser.parse_args(argv)
 
     from src.external_eval import load_models
@@ -198,7 +200,9 @@ def main(argv: list[str] | None = None) -> dict:
     para_attacks = rows[(rows["perturbation"] == "paraphrase") & (rows["label"] != "SAFE")]
     orig_attacks = rows[(rows["perturbation"] == "original") & (rows["label"] != "SAFE")]
     pattern_share = lambda frame: float(np.mean([bool(highlight_attack_patterns(clean_text(t), already_clean=True)) for t in frame["raw_text"]]))
-    models, skipped = load_models(args.protectai, tuple(args.baselines))
+    models, skipped = load_models(args.protectai, tuple(args.baselines), include_trained=not args.add_only)
+    if args.add_only and not models:
+        raise SystemExit(f"--add-only: no model could be loaded ({skipped})")
     result = {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "config": {"seed": SEED, "per_class": PER_CLASS, "max_words": MAX_WORDS, "perturbations": list(PERTURBATIONS),
@@ -215,6 +219,14 @@ def main(argv: list[str] | None = None) -> dict:
         probs_io.save_probs(f"robustness_v2_{name}", probs, rows["label"].tolist(), texts,
                             perturbation=rows["perturbation"].tolist())
         result["models"][name] = score(rows, probs)
+    if args.add_only:
+        existing = json.loads(OUTPUT_PATH.read_text(encoding="utf-8"))
+        if existing["config"]["per_class"] != result["config"]["per_class"]:
+            raise ValueError("--add-only: the evaluation rows differ from the existing results; re-run without it")
+        existing["models"].update(result["models"])
+        existing["models_skipped"].update(skipped)
+        existing.setdefault("added_later", []).append({"models": sorted(result["models"]), "at": result["generated_at"]})
+        result = existing
     OUTPUT_PATH.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
     columns, body = table(result)
     caption = (f"Perturbation robustness on {PER_CLASS} attack and {PER_CLASS} benign test rows; each perturbation is applied "

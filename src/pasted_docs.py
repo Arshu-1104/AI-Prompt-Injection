@@ -204,6 +204,8 @@ def main(argv: list[str] | None = None) -> dict:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--protectai", action="store_true")
     parser.add_argument("--baselines", nargs="*", default=[], choices=["regex", "keyword", "llama_pg2"])
+    parser.add_argument("--add-only", action="store_true",
+                        help="Evaluate only --protectai / --baselines and merge them into the existing artifacts/pasted_docs.json.")
     args = parser.parse_args(argv)
 
     from src.external_eval import load_models
@@ -212,7 +214,9 @@ def main(argv: list[str] | None = None) -> dict:
 
     rows = build_rows()
     texts = [clean_text(t) for t in rows["raw_text"]]
-    models, skipped = load_models(args.protectai, tuple(args.baselines))
+    models, skipped = load_models(args.protectai, tuple(args.baselines), include_trained=not args.add_only)
+    if args.add_only and not models:
+        raise SystemExit(f"--add-only: no model could be loaded ({skipped})")
     result = {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "source": {"repo": BIPIA_REPO, "commit": BIPIA_COMMIT, "files": BIPIA_FILES, "licenses": SOURCE_LICENSES},
@@ -235,6 +239,15 @@ def main(argv: list[str] | None = None) -> dict:
             result.setdefault("truncation", {})[name] = {"max_length": int(max_length),
                                                          "injected_rows_beyond": int(beyond.sum())}
         result["models"][name] = score(rows, probs, beyond)
+    if args.add_only:
+        existing = json.loads(OUTPUT_PATH.read_text(encoding="utf-8"))
+        if existing["counts"] != result["counts"]:
+            raise ValueError("--add-only: the document set differs from the existing results; re-run without it")
+        existing["models"].update(result["models"])
+        existing.setdefault("truncation", {}).update(result.get("truncation", {}))
+        existing["models_skipped"].update(skipped)
+        existing.setdefault("added_later", []).append({"models": sorted(result["models"]), "at": result["generated_at"]})
+        result = existing
     OUTPUT_PATH.write_text(json.dumps(result, indent=2), encoding="utf-8")
     columns = ["model", "FPR (clean docs)"] + [f"detected, attack at {p}" for p in POSITIONS] + ["detected, with override prefix"]
     caption = (f"Pasted documents with embedded injections (BIPIA @ {BIPIA_COMMIT[:7]}; {result['counts']['clean']} clean "
