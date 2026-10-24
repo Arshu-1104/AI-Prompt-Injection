@@ -4,7 +4,13 @@ import { useEffect, useState } from "react";
 import { RiskBadge, type RiskLabel } from "@/components/RiskBadge";
 import { TokenHighlight } from "@/components/TokenHighlight";
 
-type Result = { label: RiskLabel; confidence: number; risk_score: number; attack_patterns: string[]; explanation: string; token_highlights?: Record<string, number> };
+type RiskComponents = { base: number; pattern_boost: number; confidence_term: number };
+type Result = { label: RiskLabel; confidence: number; risk_score: number; risk_components?: RiskComponents; attack_patterns: string[]; explanation: string; token_highlights?: Record<string, number> };
+
+function formatComponents(c: RiskComponents): string {
+  const signed = (v: number) => (v < 0 ? `- ${Math.abs(v).toFixed(1)}` : `+ ${v.toFixed(1)}`);
+  return `= base ${c.base.toFixed(0)} (label) ${signed(c.pattern_boost)} (patterns) ${signed(c.confidence_term)} (confidence), clipped to 0-100`;
+}
 type ModelStatus = { available: boolean; reason?: string | null };
 type Health = { models?: Record<string, ModelStatus> };
 
@@ -77,7 +83,7 @@ export default function PlaygroundPage() {
       </div>
       <button className="rounded-md bg-slate-950 px-4 py-2 text-white" onClick={analyze}>Analyze</button>
       {error ? <p className="text-sm text-malicious">{error}</p> : null}
-      {result ? <div className="space-y-3 rounded-md border bg-white p-4"><RiskBadge label={result.label} /><div className="h-2 rounded bg-slate-200"><div className="h-2 rounded bg-slate-950" style={{ width: `${result.risk_score}%` }} /></div><p>Risk score: {result.risk_score.toFixed(1)}</p><p>Confidence: {result.confidence.toFixed(2)}</p><p>{result.explanation}</p><p className="text-sm text-slate-600">Patterns: {result.attack_patterns.join(", ") || "none"}</p>{result.token_highlights && Object.keys(result.token_highlights).length > 0 ? <TokenHighlight text={text} scores={result.token_highlights} /> : null}</div> : null}
+      {result ? <div className="space-y-3 rounded-md border bg-white p-4"><RiskBadge label={result.label} /><div className="h-2 rounded bg-slate-200"><div className="h-2 rounded bg-slate-950" style={{ width: `${result.risk_score}%` }} /></div><p>Risk score: {result.risk_score.toFixed(1)}</p>{result.risk_components ? <p className="text-sm text-slate-600">{formatComponents(result.risk_components)}</p> : null}<p>Confidence: {result.confidence.toFixed(2)}</p><p>{result.explanation}</p><p className="text-sm text-slate-600">Patterns: {result.attack_patterns.join(", ") || "none"}</p>{result.token_highlights && Object.keys(result.token_highlights).length > 0 ? <div><p className="text-sm text-slate-600">Words that contributed most to this label:</p><TokenHighlight text={text} scores={result.token_highlights} /></div> : null}</div> : null}
     </div>
   );
 }

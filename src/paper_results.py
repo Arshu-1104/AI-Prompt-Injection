@@ -41,7 +41,9 @@ import pandas as pd
 from src.metrics import LABELS, evaluate_split, labels_from_probs, wilson_interval
 from src.preprocess import clean_text, get_splits
 from src.robustness import ADVERSARIAL_PROMPTS, LOW_CONFIDENCE_N
+from src import baselines
 from src import latency as latency_bench
+from src import probs_io
 from src import stats
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -56,6 +58,9 @@ DISPLAY_NAMES = {
     "bert": "DistilBERT (bert)",
     "guard": "ModernBERT-base (guard)",
     "protectai": "ProtectAI DeBERTa-v3 (baseline)",
+    "llama_pg2": "Llama Prompt Guard 2-86M (baseline)",
+    "regex": "Regex only (baseline)",
+    "keyword": "Keyword list (baseline)",
 }
 WARMUP_CALLS = 3
 MIN_CATEGORY_ROWS = 10  # smaller dataset categories are pooled into one row
@@ -104,25 +109,29 @@ class TransformerPredictor:
     columns, so it can never predict the synthetic SUSPICIOUS class.
     """
 
-    def __init__(self, source: str, max_length: int | None = None, batch_size: int = 32):
+    def __init__(self, source: str, max_length: int | None = None, batch_size: int = 32,
+                 label_map: dict[str, str] | None = None):
         import torch
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
         torch.set_num_threads(max(1, os.cpu_count() or 1))
         self.torch = torch
         self.source = source
+        self.label_map = {str(k).upper(): v for k, v in (label_map or {}).items()}
         self.tokenizer = AutoTokenizer.from_pretrained(source)
         self.model = AutoModelForSequenceClassification.from_pretrained(source).to("cpu").eval()
         # Trained PromptGuard models carry their training length; others default to 256.
         self.max_length = max_length or int(getattr(self.model.config, "promptguard_max_length", 256))
         self.batch_size = batch_size
-        self.columns = [
-            LABELS.index(self._map_label(self.model.config.id2label[i])) for i in range(self.model.config.num_labels)
-        ]
+        self.id2label = {int(i): str(self.model.config.id2label[i]) for i in range(self.model.config.num_labels)}
+        self.columns = [LABELS.index(self._map_label(self.id2label[i], self.label_map))
+                        for i in range(self.model.config.num_labels)]
 
     @staticmethod
-    def _map_label(name: str) -> str:
+    def _map_label(name: str, label_map: dict[str, str] | None = None) -> str:
         upper = str(name).upper()
+        if label_map and upper in label_map:
+            return label_map[upper]
         if upper in LABELS:
             return upper
         if "INJECTION" in upper or "JAILBREAK" in upper or "UNSAFE" in upper:
@@ -195,6 +204,17 @@ def evaluate_predictor(predictor, test_df: pd.DataFrame, categories: pd.Series) 
         for cat, e in sorted(adversarial.items())
     }
     return result
+
+
+def save_probs(model_type: str, seed, probs: np.ndarray, test_df: pd.DataFrame) -> Path:
+    """One run's test probabilities, for later analyses (curves, escalation, thresholds)."""
+    return probs_io.save_probs(
+        f"test_{model_type}_seed{'none' if seed is None else seed}",
+        probs,
+        test_df["label"].tolist(),
+        test_df["text"].tolist(),
+        derivation=test_df["derivation"].astype(str).tolist(),
+    )
 
 
 def measure_latency(predictor, texts: list[str]) -> dict:
@@ -321,20 +341,24 @@ def run_transformer(model_type, seeds, test_df, categories, latency_texts, args)
     return {"runs": runs, "latency": latency}
 
 
-def run_protectai(test_df, categories, latency_texts) -> dict:
-    print(f"[protectai] evaluating {PROTECTAI_ID} (no training) ...")
+def run_untrained(name: str, factory, test_df, categories, latency_texts) -> dict:
+    """One run of a model used as published (no training): ProtectAI and the src.baselines models."""
+    print(f"[{name}] evaluating (no training) ...")
     try:
-        predictor = TransformerPredictor(PROTECTAI_ID, max_length=512)
+        predictor = factory()
     except Exception as exc:
         reason = f"{type(exc).__name__}: {exc}"
-        print(f"[protectai] FAILED: {reason}")
+        print(f"[{name}] FAILED: {reason}")
         return {"runs": [{"seed": None, "status": "failed", "reason": reason}], "latency": None}
     metrics = evaluate_predictor(predictor, test_df, categories)
-    return {
+    result = {
         "runs": [{"seed": None, "status": "ok", **metrics}],
         "latency": measure_latency(predictor, latency_texts),
-        "label_mapping": {"SAFE": "SAFE", "INJECTION": "MALICIOUS"},
+        "source": getattr(predictor, "source", name),
     }
+    if hasattr(predictor, "id2label"):
+        result["label_mapping"] = {label: LABELS[col] for label, col in zip(predictor.id2label.values(), predictor.columns)}
+    return result
 
 
 THREE_CLASS_METRICS = ("accuracy", "f1_weighted", "precision_weighted", "recall_weighted", "ece")
@@ -584,6 +608,8 @@ def main(argv: list[str] | None = None) -> dict:
     parser.add_argument("--max-samples", type=int, default=None, help="Smoke run: cap transformer train/test rows.")
     parser.add_argument("--latency-samples", type=int, default=200)
     parser.add_argument("--protectai", action="store_true", help=f"Also evaluate {PROTECTAI_ID}.")
+    parser.add_argument("--baselines", nargs="*", choices=baselines.BASELINES, default=[],
+                        help="Untrained baselines from src.baselines (llama_pg2 needs HF_TOKEN with the licence accepted).")
     parser.add_argument("--bootstrap", type=int, default=stats.N_BOOTSTRAP, help="Bootstrap resamples (default: 1000).")
     parser.add_argument(
         "--reuse-finished-seeds",
@@ -612,11 +638,13 @@ def main(argv: list[str] | None = None) -> dict:
         result["seeds_requested"] = seeds[model_type]
         result["summary"] = aggregate(result)
         model_results[model_type] = result
-    if args.protectai:
-        result = run_protectai(test_df, categories, latency_texts)
+    untrained = [("protectai", lambda: TransformerPredictor(PROTECTAI_ID, max_length=512))] if args.protectai else []
+    untrained += [(name, baselines.FACTORIES[name]) for name in args.baselines]
+    for name, factory in untrained:
+        result = run_untrained(name, factory, test_df, categories, latency_texts)
         result["seeds_requested"] = []
         result["summary"] = aggregate(result)
-        model_results["protectai"] = result
+        model_results[name] = result
 
     reference: dict[str, stats.Evaluated] = {}
     for model_type, result in model_results.items():
@@ -636,9 +664,11 @@ def main(argv: list[str] | None = None) -> dict:
         for i, a in enumerate(names)
         for b in names[i + 1 :]
     ]
-    for result in model_results.values():
+    for model_type, result in model_results.items():
         for run in result["runs"]:
-            run.pop("_probs", None)
+            probs = run.pop("_probs", None)
+            if probs is not None and not args.max_samples:
+                run["probs_file"] = save_probs(model_type, run["seed"], probs, test_df).relative_to(ROOT).as_posix()
 
     results = {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),

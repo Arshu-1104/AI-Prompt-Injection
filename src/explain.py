@@ -116,6 +116,54 @@ def _merge_subword_scores(tokens: list[str], scores: list[float]) -> dict[str, f
     return word_scores
 
 
+WORD_TOKEN = r"(?u)\b\w\w+\b"  # TfidfVectorizer's default token_pattern
+
+
+def classical_word_scores(pipeline, text: str, label: str, top_k: int = 10) -> dict[str, float]:
+    """Words that push the TF-IDF + logistic-regression pipeline towards *label*.
+
+    Exact per-feature contribution to the label's logit, centred over classes (which
+    leaves the softmax unchanged): x_f * (w[label, f] - mean_c w[c, f]). Each word
+    n-gram's contribution is split evenly over its words, and each char_wb n-gram's
+    over the words of *text* it occurs in; that split to words is an approximation.
+    Returns the top_k words with a positive score, scaled to (0, 1] by the largest.
+    Works for the deployed pipeline (FeatureUnion of 'word' and 'char' vectorizers);
+    returns {} for any other model.
+    """
+    import re
+
+    try:
+        union = pipeline.named_steps["tfidf"]
+        classifier = pipeline.named_steps["classifier"]
+        names = union.get_feature_names_out()
+        coef = np.asarray(classifier.coef_)
+    except (AttributeError, KeyError):
+        return {}
+    classes = [str(c) for c in classifier.classes_]
+    if label not in classes or coef.shape[0] != len(classes):
+        return {}
+    weights = coef[classes.index(label)] - coef.mean(axis=0)
+    x = union.transform([text]).tocoo()
+    words = re.findall(WORD_TOKEN, text.lower())
+    if not words:
+        return {}
+    scores: dict[str, float] = {}
+    for col, value in zip(x.col, x.data):
+        contribution = float(value * weights[col])
+        kind, _, feature = names[col].partition("__")
+        if kind == "word":
+            owners = feature.split()
+        else:  # char_wb n-gram: the words of this text that contain it (padded with spaces, as char_wb does)
+            owners = [w for w in set(words) if feature in f" {w} "]
+        for owner in owners:
+            scores[owner] = scores.get(owner, 0.0) + contribution / len(owners)
+    positive = sorted(((w, s) for w, s in scores.items() if s > 0), key=lambda item: item[1], reverse=True)[:top_k]
+    if not positive:
+        return {}
+    top = positive[0][1]
+    return {w: s / top for w, s in positive}
+
+
 def get_token_importance(text: str) -> dict[str, float]:
     if not BERT_EXPLAIN_AVAILABLE:
         return {}

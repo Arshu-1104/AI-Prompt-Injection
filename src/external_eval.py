@@ -41,6 +41,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from src import probs_io
 from src.metrics import LABELS, summarize_binary
 from src.preprocess import clean_text
 
@@ -153,7 +154,7 @@ def remove_training_overlap(frame: pd.DataFrame, exact: set[str], normalized: se
     return kept, {"exact_duplicates_removed": int(is_exact.sum()), "normalized_duplicates_removed": int(is_norm.sum())}
 
 
-def load_models(include_protectai: bool) -> tuple[dict, dict]:
+def load_models(include_protectai: bool, baseline_names: tuple[str, ...] = ()) -> tuple[dict, dict]:
     """name -> callable(texts) -> (n, 3) probabilities; plus skip reasons."""
     from src.predict import PromptAnalyzer
 
@@ -171,6 +172,13 @@ def load_models(include_protectai: bool) -> tuple[dict, dict]:
             models["protectai"] = TransformerPredictor(PROTECTAI_ID, max_length=512).predict
         except Exception as exc:
             skipped["protectai"] = f"{type(exc).__name__}: {exc}"
+    from src.baselines import FACTORIES
+
+    for name in baseline_names:
+        try:
+            models[name] = FACTORIES[name]().predict
+        except Exception as exc:
+            skipped[name] = f"{type(exc).__name__}: {exc}"
     return models, skipped
 
 
@@ -285,6 +293,8 @@ def weights_source(predict) -> dict:
     model_type = getattr(owner, "model_type", None)
     if model_type in ("bert", "guard"):
         model = getattr(owner, f"{model_type}_model", None)
+    if model is None and model_type is None:  # rule-based baselines (src.baselines): no weights at all
+        return {"source": str(source), "loaded_from": "code", "hub_revision": None}
     path = Path(str(source))
     if path.exists():
         resolved = path.resolve()
@@ -361,10 +371,12 @@ def threshold_table(datasets_out: list[dict]) -> tuple[list[str], list[list[str]
 def main(argv: list[str] | None = None) -> dict:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--protectai", action="store_true", help="Also evaluate protectai/deberta-v3-base-prompt-injection-v2.")
+    parser.add_argument("--baselines", nargs="*", default=[], choices=["regex", "keyword", "llama_pg2"],
+                        help="Untrained baselines from src.baselines (llama_pg2 needs HF_TOKEN with the licence accepted).")
     args = parser.parse_args(argv)
 
     exact, normalized, provenance = training_texts()
-    models, model_skips = load_models(args.protectai)
+    models, model_skips = load_models(args.protectai, tuple(args.baselines))
     for name, reason in model_skips.items():
         print(f"[model {name}] skipped: {reason[:200]}")
     model_weights = {name: weights_source(predict) for name, predict in models.items()}
@@ -414,6 +426,10 @@ def main(argv: list[str] | None = None) -> dict:
         y_true = kept["label"].tolist()
         for name, predict in models.items():
             probs = _batched(predict, texts)
+            probs_io.save_probs(
+                f"external_{probs_io.slug(ds.name)}_{name}", probs, y_true, texts,
+                **{f"subset_{code}": mask for code, mask in subsets.items()},
+            )
             metrics = score_external(y_true, probs, thresholds.get(name))
             entry["models"][name] = metrics
             for code, mask in subsets.items():
