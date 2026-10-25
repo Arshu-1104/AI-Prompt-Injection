@@ -4,7 +4,10 @@ All figures are single-column (3.5 in / 8.9 cm wide) unless noted. Use black, wh
 (#BFBFBF); IEEE prints in greyscale. Font: the same sans-serif everywhere, 7-8 pt at final size.
 Export from draw.io as PDF (File > Export as > PDF, "Crop" ticked) and save as `paper/fig1_architecture.pdf`.
 
-## Fig. 1: PromptGuard components and data flow (draw yourself in draw.io)
+## Fig. 1: PromptGuard components and data flow (drawn in TikZ: `paper/fig1.tex`)
+
+The paper includes `paper/fig1.tex`, drawn to this spec. To replace it with a draw.io version, export it as
+`paper/fig1_architecture.pdf` and swap the `\input{fig1}` line in `paper/main.tex` for an `\includegraphics`.
 
 Left to right, three columns. Keep it plain: boxes and arrows, no icons or logos (no ChatGPT,
 Claude or Gemini logos; write the site names as text).
