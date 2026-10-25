@@ -1,0 +1,70 @@
+% Response to Reviewers: last page of the resubmission (required by ICCD).
+% Numbers use the same \pgnum / \pgr keys as the paper, so they come from the same artifacts.
+\onecolumn
+\section*{Response to Reviewers}
+\small
+The paper was reviewed at ICDDS 2026 (\#1316), INDICON 2026 (\#4970) and IEEE ICCD-2026 (\#82). Many comments
+overlap, so we answer by theme; section, table and figure numbers refer to the revised paper.
+
+\subsection*{A. Main concerns}
+\begin{enumerate}\setlength{\itemsep}{1pt}
+\item \textbf{BERT and guard tiers not evaluated} (ICDDS R4, R5; INDICON R1, R2.1; ICCD 3.1). \emph{Done.}
+DistilBERT and ModernBERT (\pgnum{pr.models.bert.summary.n_seeds_ok} and \pgnum{pr.models.guard.summary.n_seeds_ok}
+seeds) are evaluated like the classical model in every experiment of Section~\ref{sec:eval}. Sentences about
+hosting limits and storage quotas are removed.
+\item \textbf{35-prompt test bed too small} (ICDDS R4; INDICON R1, R2.2; ICCD 3.2). \emph{Done.} Retired. We
+report the official test split (\pgnum{cur.sets.\testset.classical.n} rows), three public external sets and
+real prompts (Section~\ref{sec:real}: \pgnum{rw.sets.in_the_wild.label_counts.MALICIOUS} jailbreaks and
+\pgnum{rw.sets.in_the_wild.label_counts.SAFE} regular prompts from the wild, \pgnum{rw.sets.wildchat.rows} real ChatGPT
+messages), with AUROC, FPR, FPR at fixed TPR, confusion matrices and 95\% CIs.
+\item \textbf{No baselines; compare with Llama Prompt Guard 2} (ICDDS R4; INDICON R2.6; ICCD 3.2, Q3). \emph{Done.}
+Prompt Guard 2, ProtectAI's detector, regex-only and keyword baselines are run on every set. Q3 asked for the
+35-prompt benchmark, which is retired; the comparison uses the public sets. Neither public detector fully
+discloses its training data, so overlap with the external sets cannot be excluded.
+\item \textbf{Training data, splits, model selection; leakage} (ICDDS R4; INDICON R2.3; ICCD Q1). \emph{Done}
+(Section~\ref{sec:data}): pinned dataset revision, split sizes, the SUSPICIOUS derivation, cross-split
+de-duplication, candidates and validation scores, hyperparameters. The old text wrongly called the classical
+model a cross-validated ensemble; it is one model chosen on the validation split. Code and data revisions are released.
+\item \textbf{Risk score, Review band, 0.65 threshold undefined} (INDICON R2.3, R2.4; ICCD). \emph{Done.} The
+formula is given as the API computes it, and the API returns its three terms. Escalation is evaluated with
+the threshold chosen on validation only (Section~\ref{sec:pipeline}); it does not help, so ``multi-tier'' is
+dropped from the title.
+\item \textbf{Inconsistent labels} (ICDDS R4; INDICON R2.4). \emph{Done.} SAFE / SUSPICIOUS / MALICIOUS
+throughout, mapped once to the UI names; the headline is binary because SUSPICIOUS is synthetic.
+\item \textbf{``Real-time''/``lightweight'' not measured; debounce vs rate limit} (ICDDS R4; INDICON R2.7; ICCD 3.5,
+Q2). \emph{Done.} CPU latency per model (Table~\ref{tab:indist}); end-to-end latency in the extension, median
+\pgr{0}{e2e.local.classical.end_to_end_ms.median}~ms for the classical model including the
+\pgnum{e2e.config.debounce_ms}~ms debounce; scripted typing sends
+\pgr{1}{e2e.local.typing_session.requests_per_minute} requests per minute against a limit of
+\pgnum{e2e.config.rate_limit_per_minute}. ``Real-time'' is not in the title.
+\item \textbf{Threat model; jailbreak vs injection; pasted documents} (ICDDS R4; INDICON R2.8). \emph{Done.}
+Section~\ref{sec:system} separates jailbreaks (user attacks; no protection claim) from injection in pasted
+third-party content (our target), and Table~\ref{tab:docs} tests that case. The result is negative and reported as such.
+\item \textbf{30\% FPR makes the tool unusable} (ICDDS R4; INDICON R2.4; ICCD 3.3). \emph{Agreed, and now
+measured properly.} The 30\% came from 10 hand-written prompts. The FPR is
+\pgr{3}{pr.models.classical.bootstrap.binary.false_positive_rate.point} on our test split, but our models flag
+\pgp{0}{rw.models.guard.wildchat.flag_rate.rate}--\pgp{0}{rw.models.bert.wildchat.flag_rate.rate}\% of real
+ChatGPT messages. The paper now says plainly that they are not usable as filters.
+\item \textbf{Adaptive attacks; over-flagging} (INDICON R2.5, R2.9). \emph{Done.} Table~\ref{tab:robust} perturbs
+attack \emph{and} benign rows; it confirms that perfect attack scores came from flagging anything unusual.
+\item \textbf{Privacy} (ICDDS R4; INDICON R2.9). \emph{Done} (Section~\ref{sec:system}): what is sent and stored, permissions, self-hosting.
+\item \textbf{``No patterns listed''} (INDICON R2.5; ICCD). \emph{Done.} The API returns the words behind an
+unexplained flag, computed from the classical model's weights (Fig.~\ref{fig:explain}).
+\item \textbf{Novelty; name clash} (INDICON R2.10; ICCD). \emph{Done.} Section~\ref{sec:related} states the
+contribution (browser-side deployment and the generalization study, not a new architecture) and that the name
+is unrelated to Meta's Prompt Guard.
+\end{enumerate}
+
+\subsection*{B. Remaining points}
+\begin{itemize}\setlength{\itemsep}{1pt}
+\item \textbf{Typos, revision artefacts, implementation detail} (all venues; ICCD 3.4): removed with the rewrite.
+\item \textbf{References}: all checked against arXiv or the publisher. [9] now lists its authors as on arXiv
+(first author V.~Benjamin, last T.~Heverin). We also corrected the authors of two Liu et al.\ papers and of
+Zhang et al.\ (ICDM 2024) and the year of PromptShield (2025), added arXiv IDs, cite Prompt Guard 2 by its
+model card, and mark the remaining blog post as such.
+\item \textbf{Figures}: Fig.~1 is redrawn with the paper's labels and the escalation path; the illegible old
+Fig.~2 is replaced by a large annotated screenshot (Fig.~\ref{fig:explain}); tables are \texttt{booktabs} tables
+generated from the experiment outputs.
+\item \textbf{Small categories}: no percentage is reported for fewer than five samples.
+\item \textbf{Found by us}: section numbering and order, and a sentence without a main verb, are fixed.
+\end{itemize}

@@ -1,0 +1,48 @@
+% Fig. 1: PromptGuard components and data flow (spec: paper/FIGURES.md). Plain boxes and arrows, greyscale.
+% Left: the user's browser; right: the self-hostable API with storage and dashboard below it.
+\begin{tikzpicture}[
+  font=\scriptsize, >=Stealth,
+  box/.style={draw, rounded corners=1.5pt, align=center, inner sep=2pt, fill=white},
+  soft/.style={box, fill=black!6},
+  note/.style={align=center, text=black!70, font=\tiny},
+  flow/.style={->, thick},
+]
+% ---------------------------------------------------------------- browser (left column)
+\node[font=\scriptsize\itshape] (btitle) at (0,0) {User's browser};
+\node[soft, below=1.5mm of btitle, text width=2.9cm] (doc) {Pasted email, web page\\or document};
+\node[box, below=4mm of doc, text width=2.9cm] (prompt) {Prompt box of a hosted\\chat service};
+\node[box, below=1.5mm of prompt, text width=2.9cm] (ext) {\textbf{PromptGuard extension}\\content script + badge};
+\node[note, below=0.5mm of ext, font=\tiny] (labels) {SAFE / SUSPICIOUS / MALICIOUS\\(Safe / Review / Danger in the UI)};
+\draw[flow, dashed] (doc) -- node[note, right] {user pastes} (prompt);
+\begin{scope}[on background layer]
+  \node[draw, dashed, rounded corners=3pt, inner sep=1.5mm, fit=(btitle)(doc)(prompt)(ext)(labels)] (browser) {};
+\end{scope}
+
+% ---------------------------------------------------------------- API (right column)
+\node[font=\scriptsize\itshape, anchor=north west] (atitle) at ([xshift=31mm]btitle.north east) {PromptGuard API (self-hostable)};
+\node[box, below=1.5mm of atitle.south west, anchor=north west, text width=2.3cm] (norm) {Normalization\\(decodes Base64/ROT13)};
+\node[box, below=2.5mm of norm, text width=2.3cm] (classical) {\textbf{Classical}\\TF-IDF + logistic regr.};
+\node[box, below=2.5mm of classical, text width=2.3cm] (floor) {Rule floor\\(chat-template tokens)};
+\node[box, anchor=north west, text width=2.1cm, dashed] (guard) at ([xshift=4mm]norm.north east)
+  {DistilBERT / ModernBERT\\(optional; receives\\SUSPICIOUS verdicts\\with conf.\ $<$ 0.65)};
+\node[box, below=2.5mm of guard, text width=2.1cm] (patterns) {Patterns\\(explanation only)};
+\draw[flow] (norm) -- (classical);
+\draw[flow] (classical) -- (floor);
+\draw[->, dashed] (classical.east) -- (classical.east -| guard.west);
+\begin{scope}[on background layer]
+  \node[draw, thick, rounded corners=3pt, inner sep=1.5mm, fit=(atitle)(norm)(classical)(guard)(floor)(patterns)] (api) {};
+\end{scope}
+
+% browser <-> API: horizontal arrows between the two columns, labels in the gap
+\draw[flow] ([yshift=2.2mm]ext.east) -- node[note, above] {text after a\\\pgnum{e2e.config.debounce_ms}~ms pause,\\API key (HTTPS)}
+  ([yshift=2.2mm]ext.east -| api.west);
+\draw[flow] ([yshift=-2.2mm]ext.east -| api.west) -- node[note, below] {label, confidence,\\risk score and terms,\\patterns, top words}
+  ([yshift=-2.2mm]ext.east);
+
+% ---------------------------------------------------------------- storage and dashboard (below the API)
+\node[box, cylinder, shape border rotate=90, aspect=0.2, text width=2.3cm, minimum height=0.75cm, anchor=north]
+  (db) at ([yshift=-4mm]floor.south |- api.south) {Database: hash of text,\\label, scores (no text)};
+\node[box, text width=2.1cm, anchor=north] (dash) at ([yshift=-4mm]patterns.south |- api.south) {Dashboard: API keys,\\logs, playground};
+\draw[flow] (api.south -| db.north) -- (db.north);
+\draw[flow, <->] (dash.north) -- (api.south -| dash.north);
+\end{tikzpicture}

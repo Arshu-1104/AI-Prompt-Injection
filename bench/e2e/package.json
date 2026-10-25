@@ -1,0 +1,11 @@
+{
+  "private": true,
+  "description": "End-to-end latency of the PromptGuard extension (paper experiment E7). See e2e_latency.mjs.",
+  "type": "module",
+  "scripts": {
+    "e2e": "node e2e_latency.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.56.1"
+  }
+}

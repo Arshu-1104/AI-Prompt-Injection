@@ -23,7 +23,7 @@ from src.preprocess import (
     highlight_attack_patterns,
     rule_flags,
 )
-from src.explain import _merge_subword_scores
+from src.explain import _merge_subword_scores, classical_word_scores
 from src.train_classical import RuleBasedClassifier
 
 
@@ -239,12 +239,23 @@ class PromptAnalyzer:
 
         label, raised_by_rule = apply_rule_floor(label, flags)
 
-        token_highlights = (
-            self._get_token_importance(normalized) if self.model_type == "bert" and not empty_input else {}
-        )
+        token_highlights: dict[str, float] = {}
+        if self.model_type == "bert" and not empty_input:
+            token_highlights = self._get_token_importance(normalized)
+        elif (
+            self.model_type == "classical"
+            and label != "SAFE"
+            and not patterns
+            and not empty_input
+            and not escalated  # the label came from the guard model; classical weights would not explain it
+            and not self.is_rule_based_fallback
+        ):
+            # No pattern explains the flag: show the words that pushed the classifier towards it.
+            token_highlights = classical_word_scores(self.classical_model, normalized, label)
         base_risk = {"SAFE": 15.0, "SUSPICIOUS": 55.0, "MALICIOUS": 85.0}[label]
         pattern_boost = min(len(patterns) * 4.0, 15.0)
-        risk_score = max(0.0, min(100.0, base_risk + pattern_boost + (confidence - 0.5) * 20))
+        confidence_term = (confidence - 0.5) * 20
+        risk_score = max(0.0, min(100.0, base_risk + pattern_boost + confidence_term))
         explanation = _explain_label(label, patterns, confidence)
         if empty_input:
             explanation += (
@@ -266,6 +277,8 @@ class PromptAnalyzer:
             "label": label,
             "confidence": confidence,
             "risk_score": risk_score,
+            # risk_score = clip(base + pattern_boost + confidence_term, 0, 100)
+            "risk_components": {"base": base_risk, "pattern_boost": pattern_boost, "confidence_term": confidence_term},
             "attack_patterns": patterns,
             "token_highlights": token_highlights,
             "explanation": explanation,
