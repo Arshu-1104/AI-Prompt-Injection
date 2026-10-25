@@ -8,6 +8,9 @@ services:
     #   buildCommand: pip install -r requirements-render.txt && pip install torch --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements-heavy.txt && alembic upgrade head
     #   env: ENABLE_HEAVY_MODELS=true, BERT_MODEL_ID=Arshu-110405/promptguard-bert,
     #        GUARD_MODEL_ID=Arshu-110405/promptguard-guard, HF_TOKEN (the repos are private)
+    # Render applies this file only to Blueprint services. For a service created in the
+    # dashboard, set Settings -> Build Command to this same value, or migrations never run
+    # (the app then starts but every route that reads a newer column returns 500).
     buildCommand: pip install -r requirements-render.txt && alembic upgrade head
     startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
     envVars:
