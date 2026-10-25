@@ -155,17 +155,20 @@ def remove_training_overlap(frame: pd.DataFrame, exact: set[str], normalized: se
 
 
 def load_models(include_protectai: bool, baseline_names: tuple[str, ...] = (),
-                include_trained: bool = True) -> tuple[dict, dict]:
+                include_trained: bool = True, device: str = "cpu",
+                trained_models: tuple[str, ...] = ("classical", "bert", "guard")) -> tuple[dict, dict]:
     """name -> callable(texts) -> (n, 3) probabilities; plus skip reasons.
 
-    include_trained=False loads only ProtectAI / the named baselines (used to add a model to existing results).
+    include_trained=False loads only ProtectAI / the named baselines (used to add a model to existing results);
+    trained_models limits which of our models are loaded.
+    device: torch device for the transformer models (CPU by default, as in every latency-relevant run).
     """
     from src.predict import PromptAnalyzer
 
     models, skipped = {}, {}
-    for model_type in ("classical", "bert", "guard") if include_trained else ():
+    for model_type in trained_models if include_trained else ():
         try:
-            analyzer = PromptAnalyzer(model_type=model_type, device="cpu")
+            analyzer = PromptAnalyzer(model_type=model_type, device=device)
             models[model_type] = analyzer.predict_proba
         except Exception as exc:
             skipped[model_type] = f"{type(exc).__name__}: {exc}"
@@ -173,14 +176,14 @@ def load_models(include_protectai: bool, baseline_names: tuple[str, ...] = (),
         try:
             from src.paper_results import PROTECTAI_ID, TransformerPredictor
 
-            models["protectai"] = TransformerPredictor(PROTECTAI_ID, max_length=512).predict
+            models["protectai"] = TransformerPredictor(PROTECTAI_ID, max_length=512, device=device).predict
         except Exception as exc:
             skipped["protectai"] = f"{type(exc).__name__}: {exc}"
     from src.baselines import FACTORIES
 
     for name in baseline_names:
         try:
-            models[name] = FACTORIES[name]().predict
+            models[name] = (FACTORIES[name](device=device) if name == "llama_pg2" else FACTORIES[name]()).predict
         except Exception as exc:
             skipped[name] = f"{type(exc).__name__}: {exc}"
     return models, skipped

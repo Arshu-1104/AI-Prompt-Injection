@@ -8,6 +8,7 @@ Steps, in order (each is also runnable on its own):
   docs      python -m src.pasted_docs
   robust    python -m src.robustness_v2
   diag      python -m src.diagnosis
+  real      python -m src.real_world_eval (in-the-wild jailbreaks + WildChat; GPU if available)
   e2e       node bench/e2e/e2e_latency.mjs, then python -m src.e2e_report  (needs Node + Playwright)
   numbers   python -m src.paper_numbers   -> paper/numbers.tex
   pdf       pdflatex paper/main.tex (twice)  (set PDFLATEX to the pdflatex executable)
@@ -30,7 +31,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-STEPS = ("results", "external", "curves", "pipeline", "docs", "robust", "diag", "e2e", "numbers", "pdf")
+STEPS = ("results", "external", "curves", "pipeline", "docs", "robust", "diag", "real", "e2e", "numbers", "pdf")
 # Arguments of the run reported in the paper (see artifacts/paper_results.json "config").
 RESULTS_ARGS = ["--guard-seeds", "3", "--guard-batch-size", "8", "--max-length", "384", "--protectai",
                 "--reuse-finished-seeds"]
@@ -78,6 +79,8 @@ def main(argv: list[str] | None = None) -> None:
             run(py + ["src.robustness_v2", "--protectai", *extra])
         elif step == "diag":
             run(py + ["src.diagnosis"])
+        elif step == "real":
+            run(py + ["src.real_world_eval", "--protectai", *extra])
         elif step == "e2e":
             node = shutil.which("node") or "node"
             run([node, "bench/e2e/e2e_latency.mjs"], env={**os.environ, "PROMPTGUARD_PYTHON": sys.executable})

@@ -110,16 +110,18 @@ class TransformerPredictor:
     """
 
     def __init__(self, source: str, max_length: int | None = None, batch_size: int = 32,
-                 label_map: dict[str, str] | None = None):
+                 label_map: dict[str, str] | None = None, device: str = "cpu"):
         import torch
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+        self.device = device
 
         torch.set_num_threads(max(1, os.cpu_count() or 1))
         self.torch = torch
         self.source = source
         self.label_map = {str(k).upper(): v for k, v in (label_map or {}).items()}
         self.tokenizer = AutoTokenizer.from_pretrained(source)
-        self.model = AutoModelForSequenceClassification.from_pretrained(source).to("cpu").eval()
+        self.model = AutoModelForSequenceClassification.from_pretrained(source).to(device).eval()
         # Trained PromptGuard models carry their training length; others default to 256.
         self.max_length = max_length or int(getattr(self.model.config, "promptguard_max_length", 256))
         self.batch_size = batch_size
@@ -150,8 +152,8 @@ class TransformerPredictor:
                     max_length=self.max_length,
                     padding=True,
                     return_tensors="pt",
-                )
-                probs = self.torch.softmax(self.model(**batch).logits.float(), dim=-1).numpy()
+                ).to(self.device)
+                probs = self.torch.softmax(self.model(**batch).logits.float(), dim=-1).cpu().numpy()
                 for model_col, label_col in enumerate(self.columns):
                     out[start : start + len(probs), label_col] += probs[:, model_col]
         return out

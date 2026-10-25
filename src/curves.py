@@ -58,8 +58,8 @@ DISPLAY = {
 }
 # Panels of the figure: (evaluation set, title). External sets that were not evaluated are skipped.
 FIGURE_SETS = (
-    (TEST_SET, "In-distribution (neuralchemy test)"),
-    ("qualifire/prompt-injections-benchmark", "Cross-dataset (Qualifire)"),
+    (TEST_SET, "In-distribution"),
+    ("qualifire/prompt-injections-benchmark", "Qualifire"),
 )
 
 
@@ -219,9 +219,10 @@ def write_figure(curve_data: dict, path: Path) -> list[dict]:
 
     matplotlib.rcParams.update({"pdf.fonttype": 42, "ps.fonttype": 42, "font.size": 7, "axes.linewidth": 0.6})
     panels = [(s, title) for s, title in FIGURE_SETS if s in curve_data]
-    fig, axes = plt.subplots(len(panels), 2, figsize=(3.5, 1.75 * len(panels)), squeeze=False)
+    fig, axes = plt.subplots(len(panels), 2, figsize=(3.5, 1.6 * len(panels) + 0.55), squeeze=False)
     points = []
     styles = {"classical": "-", "bert": "--", "guard": "-.", "protectai": ":", "llama_pg2": (0, (5, 1, 1, 1))}
+    shades = {"classical": "0.0", "bert": "0.0", "guard": "0.0", "protectai": "0.45", "llama_pg2": "0.45"}
     for row, (set_name, title) in enumerate(panels):
         roc_ax, pr_ax = axes[row]
         for model in _ordered(curve_data[set_name]):
@@ -231,8 +232,8 @@ def write_figure(curve_data: dict, path: Path) -> list[dict]:
             fpr, tpr, _ = roc_curve(y, score)
             precision, recall, _ = precision_recall_curve(y, score)
             label = DISPLAY.get(model, model)
-            roc_ax.plot(fpr, tpr, linestyle=styles[model], color="black", linewidth=0.8, label=label)
-            pr_ax.plot(recall, precision, linestyle=styles[model], color="black", linewidth=0.8, label=label)
+            roc_ax.plot(fpr, tpr, linestyle=styles[model], color=shades[model], linewidth=0.9, label=label)
+            pr_ax.plot(recall, precision, linestyle=styles[model], color=shades[model], linewidth=0.9, label=label)
             points += [{"set": set_name, "model": model, "curve": "roc", "x": float(a), "y": float(b)} for a, b in zip(fpr, tpr)]
             points += [{"set": set_name, "model": model, "curve": "pr", "x": float(a), "y": float(b)}
                        for a, b in zip(recall, precision)]
@@ -241,10 +242,12 @@ def write_figure(curve_data: dict, path: Path) -> list[dict]:
         pr_ax.set(xlim=(0, 1), ylim=(0, 1.01), xlabel="Recall", ylabel="Precision")
         roc_ax.set_title(f"{title}: ROC", fontsize=7)
         pr_ax.set_title(f"{title}: PR", fontsize=7)
-    axes[0][0].legend(loc="lower right", fontsize=5, frameon=False)
-    fig.tight_layout(pad=0.4)
+    handles, labels = axes[0][0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="lower center", ncol=2, fontsize=5.5, frameon=False, handlelength=3)
+    fig.tight_layout(pad=0.4, rect=(0.03, 0.13, 1, 1))
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path)
+    fig.savefig(path.with_suffix(".png"), dpi=200)  # preview for checking; the paper uses the vector PDF
     plt.close(fig)
     return points
 

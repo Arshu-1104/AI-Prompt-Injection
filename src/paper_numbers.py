@@ -32,6 +32,7 @@ SOURCES = {  # short name -> file written by the code, relative to the repositor
     "rob": "artifacts/robustness_v2.json",
     "diag": "artifacts/diagnosis.json",
     "e2e": "artifacts/e2e_latency.json",
+    "rw": "artifacts/real_world.json",
     "xdiag": "artifacts/external_diagnostics.json",
     "fig2": "artifacts/fig2_example.json",  # bench/e2e/fig2_capture.mjs: the API response shown in Fig. 2
     "meta": "data/dataset_meta.json",  # written by src.load_data: split sizes, derivation counts, build fractions

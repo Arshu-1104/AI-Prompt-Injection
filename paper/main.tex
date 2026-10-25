@@ -23,7 +23,7 @@
 \newcommand{\pgnum}[1]{\pgifdef{#1}{\pgval{#1}}{\pgmissing{#1}}}
 \newcommand{\pgr}[2]{\pgifdef{#2}{\num[round-mode=places,round-precision=#1]{\fpeval{\pgval{#2}}}}{\pgmissing{#2}}}
 \newcommand{\pgp}[2]{\pgifdef{#2}{\num[round-mode=places,round-precision=#1]{\fpeval{100*\pgval{#2}}}}{\pgmissing{#2}}}
-\newcommand{\pgsci}[1]{\pgifdef{#1}{\num{\pgval{#1}}}{\pgmissing{#1}}}
+\newcommand{\pgsci}[1]{\pgifdef{#1}{\num[round-mode=figures,round-precision=2]{\pgval{#1}}}{\pgmissing{#1}}}
 \newcommand{\todo}[1]{\textbf{\textcolor{red}{[TODO: #1]}}}
 % table helpers (all values still come from numbers.tex)
 \newcommand{\cipr}[2]{\pgr{#1}{#2.point}\,[\pgr{#1}{#2.ci95.0},\,\pgr{#1}{#2.ci95.1}]}% point [95% CI]
@@ -37,6 +37,7 @@
 \newcommand{\extv}[3]{\pgr{2}{ext.datasets.#1.models.#2.#3}}% dataset, model, metric
 \newcommand{\extrow}[2]{\extv{#1}{#2}{accuracy} & \extv{#1}{#2}{false_positive_rate} & \extv{#1}{#2}{auroc.auroc}}
 \newcommand{\extline}[2]{#1 & \extrow{\dsx}{#2} & \extrow{\dsd}{#2} & \extrow{\dsq}{#2} \\}
+\newcommand{\rwline}[2]{#1 & \pgr{2}{rw.models.#2.in_the_wild.jailbreaks_detected.rate} & \pgr{2}{rw.models.#2.in_the_wild.regular_flagged.rate} & \pgr{2}{rw.models.#2.in_the_wild.auroc} & \pgr{2}{rw.models.#2.wildchat.flag_rate.rate} \\}
 \input{numbers}
 
 \begin{document}
@@ -60,10 +61,12 @@ two rule baselines. In distribution the three trained models are statistically t
 $p\geq\pgr{2}{pr.pairwise.classical_vs_guard.binary.mcnemar.p_value}$), and the linear model needs
 \pgr{1}{pr.models.classical.latency.batch_1.median_ms_per_prompt}~ms per prompt on a CPU. On three other public
 datasets their accuracy falls to \extv{\dsx}{guard}{accuracy}--\extv{\dsd}{guard}{accuracy} with
-false-positive rates up to \extv{\dsx}{guard}{false_positive_rate}; they flag nearly every clean document
-from the BIPIA benchmark, and they flag perturbed benign text as attacks. The published detectors transfer
-better across datasets but miss almost every task injection hidden in a document. Test scores on a single
-public dataset therefore overstate how useful such detectors are in front of real user text.
+false-positive rates up to \extv{\dsx}{guard}{false_positive_rate}. On real prompts it is worse: they flag
+\pgp{0}{rw.models.guard.wildchat.flag_rate.rate}--\pgp{0}{rw.models.bert.wildchat.flag_rate.rate}\% of ordinary,
+non-toxic ChatGPT messages from WildChat, nearly every clean document from the BIPIA benchmark, and perturbed
+benign text. The published detectors flag \pgp{0}{rw.models.llama_pg2.wildchat.flag_rate.rate}--\pgp{0}{rw.models.protectai.wildchat.flag_rate.rate}\%
+of those messages and catch most real jailbreaks, but miss almost every task injection hidden in a document. Test
+scores on a single public dataset therefore overstate how useful such detectors are in front of real user text.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -81,13 +84,15 @@ sent, backed by a small open-source API that anyone can host. This paper describ
 question any such tool depends on: is a detector trained on a public prompt-injection dataset good enough
 to run in front of real user text? We train three detectors on one public dataset, a TF-IDF logistic
 regression, DistilBERT and ModernBERT, and compare them with two published detectors and two rule
-baselines in distribution, on three other public datasets, on documents with embedded injections and
-under perturbations.
+baselines in distribution, on three other public datasets, on real prompts (jailbreaks and regular prompts
+collected in the wild, and real ChatGPT messages), on documents with embedded injections and under
+perturbations.
 
 In distribution the three trained models are statistically tied, with accuracy around
 \pgr{2}{pr.models.classical.bootstrap.binary.accuracy.point}, and the linear model is by far the cheapest.
-Everywhere else they fail: accuracy falls to near chance on two of the three external datasets, nearly every
-clean pasted document is flagged, and perturbations of benign text are flagged as attacks. The published
+Everywhere else they fail: accuracy falls to near chance on two of the three external datasets, more than half of
+ordinary real ChatGPT messages are flagged, nearly every clean pasted document is flagged, and perturbations of
+benign text are flagged as attacks. The published
 detectors generalize better across datasets but miss most injections hidden in documents. On benign text
 from other datasets, the classical model mostly leaves questions alone and flags much of everything else
 (Section~\ref{sec:cross}).
@@ -151,7 +156,9 @@ its own (Section~\ref{sec:data}), our headline metric is binary: SAFE against no
 
 \begin{figure}[t]
 \centering
-\fbox{\parbox{0.92\columnwidth}{\centering\small\todo{Fig.~1, to be drawn in draw.io from the spec in paper/FIGURES.md}}}
+\IfFileExists{fig1_architecture.pdf}{\includegraphics[width=\columnwidth]{fig1_architecture.pdf}}%
+{\fbox{\parbox[c][5.2cm][c]{0.92\columnwidth}{\centering\small\todo{Fig.~1, to be drawn in draw.io from the spec in
+paper/FIGURES.md; this box has its expected size}}}}
 \caption{PromptGuard components and data flow.}
 \label{fig:arch}
 \end{figure}
@@ -282,8 +289,9 @@ Table~\ref{tab:cross} applies the same models, without retraining, to three publ
 xTRam1 \cite{xtram1safeguard}, deepset \cite{deepsetpromptinjections} (English and German) and Qualifire
 \cite{qualifirebenchmark}. Texts that also occur in our training data were removed first; none did.
 
-All three trained models fall to near chance. On xTRam1 their accuracy is between
-\extv{\dsx}{guard}{accuracy} and \extv{\dsx}{bert}{accuracy}, and they flag between
+All three trained models fall to near chance (Table~\ref{tab:cross}, Fig.~\ref{fig:curves}). On xTRam1
+their accuracy is between \pgr{3}{ext.datasets.\dsx.models.guard.accuracy} and
+\pgr{3}{ext.datasets.\dsx.models.bert.accuracy}, and they flag between
 \extv{\dsx}{bert}{false_positive_rate} and \extv{\dsx}{guard}{false_positive_rate} of the benign prompts; on
 Qualifire they reach at most \extv{\dsq}{bert}{accuracy}. Their AUROC lies between
 \extv{\dsx}{bert}{auroc.auroc} and \extv{\dsd}{bert}{auroc.auroc}, so no threshold separates the classes well.
@@ -344,6 +352,56 @@ Detector & Acc. & FPR & AUROC & Acc. & FPR & AUROC & Acc. & FPR & AUROC \\
 \label{fig:curves}
 \end{figure}
 
+\subsection{Real-world prompts}\label{sec:real}
+Benchmarks are assembled by their authors; what users type is different. Table~\ref{tab:real} uses two
+sources of real prompts. The first is the in-the-wild collection of Shen et al.\ \cite{shen2024dan}:
+\pgnum{rw.sets.in_the_wild.label_counts.MALICIOUS} jailbreak prompts and a sample of
+\pgnum{rw.sets.in_the_wild.label_counts.SAFE} regular prompts that people shared on Reddit, Discord and
+prompt-sharing websites. The second is WildChat \cite{zhao2024wildchat}: \pgnum{rw.sets.wildchat.rows}
+first messages of real English ChatGPT conversations, from a release that contains only conversations not
+flagged as toxic. WildChat has no attack labels, so for it we report the share of messages flagged, which
+is the share of ordinary messages on which the extension would warn its user.
+
+Our three models catch almost every real jailbreak, but only because they flag almost everything: they
+flag \pgr{2}{rw.models.guard.in_the_wild.regular_flagged.rate}--\pgr{2}{rw.models.bert.in_the_wild.regular_flagged.rate}
+of the regular prompts and \pgr{2}{rw.models.guard.wildchat.flag_rate.rate}--\pgr{2}{rw.models.bert.wildchat.flag_rate.rate}
+of real ChatGPT messages, and their AUROC is between \pgr{2}{rw.models.bert.in_the_wild.auroc} and
+\pgr{2}{rw.models.classical.in_the_wild.auroc}. Deployed, they would warn on more than half of what users write.
+The two published detectors are usable here: they flag \pgr{2}{rw.models.protectai.wildchat.flag_rate.rate}
+(ProtectAI) and \pgr{2}{rw.models.llama_pg2.wildchat.flag_rate.rate} (Prompt Guard 2) of WildChat messages
+while still catching \pgr{2}{rw.models.protectai.in_the_wild.jailbreaks_detected.rate} and
+\pgr{2}{rw.models.llama_pg2.in_the_wild.jailbreaks_detected.rate} of the jailbreaks. Regular prompts posted
+in ChatGPT discussion communities are the hardest case for every detector (even ProtectAI flags
+\pgr{2}{rw.models.protectai.in_the_wild.regular_flagged_by_source.ChatGPT.rate} of the
+\pgnum{rw.models.protectai.in_the_wild.regular_flagged_by_source.ChatGPT.n} from the ChatGPT Discord), plausibly because they
+discuss the same techniques. These prompts are jailbreaks, where the user is the attacker, so they measure
+detection, not the protection PromptGuard offers.
+
+\begin{table}[t]
+\centering
+\caption{Real-world prompts: share of in-the-wild jailbreaks detected, share of in-the-wild regular prompts
+flagged, AUROC on that set, and share of real (non-toxic) WildChat messages flagged. Wilson CIs are in the artifact.}
+\label{tab:real}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+& \multicolumn{3}{c}{In the wild} & WildChat \\
+\cmidrule(lr){2-4}
+Detector & detected & flagged & AUROC & flagged \\
+\midrule
+\rwline{Classical}{classical}
+\rwline{DistilBERT}{bert}
+\rwline{ModernBERT}{guard}
+\midrule
+\rwline{ProtectAI}{protectai}
+\rwline{Prompt Guard 2}{llama_pg2}
+\rwline{Regex only}{regex}
+\rwline{Keyword list}{keyword}
+\bottomrule
+\end{tabular}
+\end{table}
+
 \subsection{Injections in pasted documents}
 Table~\ref{tab:docs} uses the threat model's case: \pgnum{docs.counts.documents.email} emails and
 \pgnum{docs.counts.documents.table} tables from BIPIA \cite{yi2025bipia}, framed with BIPIA's question as a
@@ -354,10 +412,14 @@ a second variant adds ``Ignore all previous instructions.'' in front of the same
 The three models we trained flag nearly every clean document: the FPR is \docfpr{classical} for the
 classical model and \docfpr{bert} and \docfpr{guard} for the transformers, so their detection rates carry
 no information. A document on its own is enough; a table of numbers is flagged with its numbers as the
-top words. ProtectAI and the rule baselines rarely flag clean documents but catch almost none of the plain
-BIPIA attacks; they catch the override variant, the rules completely and ProtectAI about half the time.
-Where the attack lies beyond ProtectAI's 512-token input, it was never detected
-(\pgnum{docs.models.protectai.detection.bipia.attack_beyond_truncation.n} cases). In short, none of the
+top words. ProtectAI, Prompt Guard 2 and the rule baselines rarely flag clean documents but catch almost none of
+the plain BIPIA attacks. They do catch the override variant: the rules every time, Prompt Guard 2 in
+\pgr{2}{docs.models.llama_pg2.detection.bipia+override.all.rate} and ProtectAI in
+\pgr{2}{docs.models.protectai.detection.bipia+override.all.rate} of cases. This matches Prompt Guard 2's
+stated scope, explicit attempts to override instructions \cite{meta2025promptguard2}. Where the attack lies
+beyond the 512-token input of these two models, it was never detected
+(\pgnum{docs.models.protectai.detection.bipia.attack_beyond_truncation.n} and
+\pgnum{docs.models.llama_pg2.detection.bipia.attack_beyond_truncation.n} cases). In short, none of the
 detectors handles the case PromptGuard is meant for: either everything is flagged or only the explicit
 override phrase is.
 
@@ -442,7 +504,20 @@ of the rows: it turns into ModernBERT, at close to ModernBERT's cost
 the classical model alone, mean CPU time in this experiment). Escalation as designed does not help, so we do
 not present PromptGuard as a multi-tier detector.
 
-\emph{Latency.} \todo{model CPU latency from Table I and end-to-end extension latency from e2e\_latency.json}
+\emph{Latency.} On the CPU, a prompt takes \pgr{2}{pr.models.classical.latency.batch_1.median_ms_per_prompt}~ms
+with the classical model, \pgr{1}{pr.models.bert.latency.batch_1.median_ms_per_prompt}~ms with DistilBERT and
+\pgr{1}{pr.models.guard.latency.batch_1.median_ms_per_prompt}~ms with ModernBERT (median, batch size 1;
+Table~\ref{tab:indist}). Absolute times varied between repeated runs on this laptop; their order did not. In the
+extension, the median time from the last keystroke to the badge is
+\pgr{0}{e2e.local.classical.end_to_end_ms.median}~ms with the classical model
+(95th percentile \pgr{0}{e2e.local.classical.end_to_end_ms.p95}~ms; \pgnum{e2e.local.classical.end_to_end_ms.n} trials
+against a local API), \pgr{0}{e2e.local.bert.end_to_end_ms.median}~ms with DistilBERT and
+\pgr{0}{e2e.local.guard.end_to_end_ms.median}~ms with ModernBERT. Of this, \pgnum{e2e.config.debounce_ms}~ms is the
+deliberate pause before a request; the API itself needs a median of
+\pgr{0}{e2e.local.classical.server_inference_ms.median}~ms for the classical model. Two minutes of scripted typing
+produced \pgr{1}{e2e.local.typing_session.requests_per_minute} requests per minute, a tenth of the
+\pgnum{e2e.config.rate_limit_per_minute} per minute allowed per API key, because the extension sends one request per
+pause rather than per keystroke.
 
 \begin{figure}[t]
 \centering
@@ -482,8 +557,9 @@ common prompts.
 PromptGuard puts a prompt-injection check in the one place every hosted chat service shares, the user's
 browser, and keeps its decisions inspectable. Measured on its own test split, a TF-IDF model is as good as
 two fine-tuned transformers at a fraction of the cost. Measured where the tool is meant to work, on other
-datasets and on pasted documents, none of the three is usable, and the published detectors trade
-over-flagging for missed injections. We see two directions: training data that covers benign documents and
+datasets, on real users' messages and on pasted documents, none of the three is usable: they would warn on more
+than half of ordinary messages. The published detectors are selective enough for real traffic but miss most
+injections hidden in documents. We see two directions: training data that covers benign documents and
 instructions as well as attacks, and judging an injection relative to the user's own request rather than in
 isolation. Until then, a browser-side detector is best treated as a warning, not a filter.
 

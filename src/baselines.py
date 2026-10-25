@@ -54,10 +54,10 @@ class KeywordBaseline:
         return probs[:, [classes.index(label) for label in LABELS]]
 
 
-def llama_pg2():
+def llama_pg2(device: str = "cpu"):
     from src.paper_results import TransformerPredictor
 
-    return TransformerPredictor(LLAMA_PG2_ID, max_length=512, label_map=LLAMA_PG2_LABELS)
+    return TransformerPredictor(LLAMA_PG2_ID, max_length=512, label_map=LLAMA_PG2_LABELS, device=device)
 
 
 FACTORIES = {"regex": RegexBaseline, "keyword": KeywordBaseline, "llama_pg2": llama_pg2}
